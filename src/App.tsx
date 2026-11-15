@@ -63,107 +63,114 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-// 1. מנוע תכנון פדגוגי מבוסס AI: מסדר את הקבצים מהבסיס למתקדם ומחלק לסשנים חכמים
+// 1. מנוע תכנון פדגוגי מהיר מבוסס AI
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
     fileIndex: idx,
     fileName: f.name,
     wordCount: f.wordCount,
-    excerpt: f.text.slice(0, 3500) // דגימה מייצגת מתוכן הקובץ לזיהוי הנושא ורמת הבסיסיות
+    excerpt: f.text.slice(0, 700)
   }));
 
-  const prompt = `אתה דיקן ומתכנן תוכניות לימודים בכיר בפקולטה לרפואה.
-קיבלת ${files.length} קבצי לימוד ויש לך בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות עד המבחן.
-
-משימתך:
-1. לנתח את התוכן של כל קובץ ולסדר את הלמידה בסדר הפדגוגי הנכון ביותר להבנה עמוקה: מהבסיס אל המורכב (קודם אנטומיה/פיזיולוגיה/מושגי יסוד, אחר כך פתופיזיולוגיה ומנגנונים, ולבסוף קליניקה, אבחנה מבדלת, פרמקולוגיה וטיפול).
-2. לחלק את החומר על פני בדיוק ${totalSessionsCount} סשנים לפי מורכבות ואורך החומר (קובץ ארוך או מורכב יקבל יותר מסשן אחד עם חלוקה ברורה לחלקים, וקבצים קצרים יכולים להיות בסשן אחד).
-3. לכל סשן לציין באיזה אחוז מתוך הקובץ להתמקד (startPercent עד endPercent מ-0 עד 100) ונימוק קצר למה הוא ממוקם בשלב הזה.
-
-החזר תשובה אך ורק בפורמט JSON תקין (ללא markdown) במבנה הבא:
+  const prompt = `אתה מתכנן תוכניות לימוד ברפואה. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם (אנטומיה/פיזיולוגיה -> פתופיזיולוגיה -> קליניקה/טיפול).
+החזר JSON תקין בלבד:
 {
-  "pedagogicalStrategy": "הסבר קצר ב-2 משפטים על ההיגיון של סדר הלימוד שנבחר לקורס",
+  "pedagogicalStrategy": "משפט אחד קצר על סדר הלימוד",
   "sessions": [
     {
       "sessionNumber": 1,
-      "title": "כותרת ברורה וממוקדת לסשן",
+      "title": "כותרת קצרה לסשן",
       "fileIndex": 0,
       "startPercent": 0,
-      "endPercent": 50,
-      "rationale": "נימוק קצר למה לומדים נושא זה בשלב הזה (למשל: בסיס אנטומי הכרחי לפני פתולוגיה)"
+      "endPercent": 100,
+      "rationale": "נימוק קצר עד 8 מילים"
     }
   ]
 }
+קבצים: ${JSON.stringify(filesCatalog)}`;
 
-רשימת הקבצים והתוכן שלהם:
-${JSON.stringify(filesCatalog)}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json' }
-      })
-    }
-  );
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: 'application/json' }
+        })
+      }
+    );
 
-  const data = await response.json();
-  if (data.error) throw new Error(data.error.message);
-  return JSON.parse(data.candidates[0].content.parts[0].text);
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    return JSON.parse(data.candidates[0].content.parts[0].text);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
-// 2. קריאה ל-Gemini API ליצירת חומר לימוד מובנה מתוך הטקסט של סשן ספציפי
+// 2. יצירת חומר לימוד מובנה במהירות גבוהה (מותאם לתגובה מהירה)
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
-  const prompt = `אתה מרצה בכיר לרפואה. עליך לבנות יחידת לימוד בעברית מתוך הטקסט הרפואי הבא עבור הנושא "${topic}".
-החזר תשובה אך ורק בפורמט JSON תקין (ללא סימני markdown מסביב) במבנה המדויק הבא:
+  const prompt = `מרצה לרפואה: בנה יחידת לימוד תמציתית בעברית לנושא "${topic}" מתוך הטקסט.
+החזר JSON תקין בלבד:
 {
-  "summary": "סיכום קליני ברור ומקיף של החומר (3-4 משפטים)",
-  "keyPoints": ["נקודת מפתח 1", "נקודת מפתח 2", "נקודת מפתח 3", "נקודת מפתח 4"],
+  "summary": "סיכום קליני ממוקד (2-3 משפטים)",
+  "keyPoints": ["נקודה 1", "נקודה 2", "נקודה 3"],
   "comparisonTable": [
-    {"param": "פרמטר להשוואה", "acute": "מאפיין א׳", "chronic": "מאפיין ב׳"}
+    {"param": "פרמטר", "acute": "מאפיין א׳", "chronic": "מאפיין ב׳"}
   ],
   "comprehensionCheck": {
-    "question": "שאלת הבנה קלינית מתוך הטקסט",
+    "question": "שאלת הבנה קלינית",
     "options": ["תשובה נכונה", "מסיח 1", "מסיח 2"],
     "correctIndex": 0
   },
   "flashcards": [
-    {"id": 1, "front": "מושג/שאלה 1", "back": "הסבר קצר ומדויק"},
-    {"id": 2, "front": "מושג/שאלה 2", "back": "הסבר קצר ומדויק"},
-    {"id": 3, "front": "מושג/שאלה 3", "back": "הסבר קצר ומדויק"}
+    {"id": 1, "front": "מושג 1", "back": "הסבר קצר"},
+    {"id": 2, "front": "מושג 2", "back": "הסבר קצר"},
+    {"id": 3, "front": "מושג 3", "back": "הסבר קצר"}
   ],
   "chapterQuiz": [
-    {"q": "שאלת בוחן 1", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 0},
-    {"q": "שאלת בוחן 2", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 1}
+    {"q": "שאלה 1", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 0},
+    {"q": "שאלה 2", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 1}
   ],
   "codeBlueCases": [
-    {"scenario": "תיאור מקרה קליני קצר במיון מתוך החומר", "question": "מה הפעולה/אבחנה הנכונה?", "options": ["פעולה נכונה", "טעות 1", "טעות 2"], "correct": 0},
-    {"scenario": "התפתחות במקרה הקליני", "question": "איך תמשיך מכאן?", "options": ["אפשרות 1", "פעולה נכונה", "טעות 2"], "correct": 1}
+    {"scenario": "מקרה קצר במיון", "question": "מה הפעולה הנכונה?", "options": ["פעולה נכונה", "טעות 1", "טעות 2"], "correct": 0},
+    {"scenario": "המשך מקרה", "question": "איך תמשיך?", "options": ["אפשרות 1", "פעולה נכונה", "טעות 2"], "correct": 1}
   ]
 }
 
-הטקסט הרפואי לעיבוד:
-${rawTextChunk.slice(0, 14000)}`;
+טקסט:
+${rawTextChunk.slice(0, 6000)}`;
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: 'application/json' }
-      })
-    }
-  );
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-  const data = await response.json();
-  if (data.error) throw new Error(data.error.message);
-  const jsonText = data.candidates[0].content.parts[0].text;
-  return JSON.parse(jsonText);
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: 'application/json' }
+        })
+      }
+    );
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    const jsonText = data.candidates[0].content.parts[0].text;
+    return JSON.parse(jsonText);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // נתוני גיבוי למקרה שלא הוזן מפתח API
@@ -205,7 +212,7 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
-  // רשימת כל הקורסים השמורים בדפדפן
+  // רשימת כל הקורסים השמורים בדפדפן (כולל תוכן AI שנשמר לכל סשן)
   const [courses, setCourses] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
@@ -222,7 +229,7 @@ export default function App() {
   const [step, setStep] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
-      return saved.length > 0 ? 0 : 1; // 0 = הקורסים שלי, 1 = טופס קורס חדש, 1.5 = בקרת תוכנית AI, 2 = לו"ז, 3 = למידה
+      return saved.length > 0 ? 0 : 1;
     } catch {
       return 1;
     }
@@ -238,7 +245,7 @@ export default function App() {
 
   // מצב תכנון ובקרה של AI לפני אישור התוכנית
   const [isPlanningAI, setIsPlanningAI] = useState(false);
-  const [draftPlan, setDraftPlan] = useState(null); // { strategy, dates, sessions }
+  const [draftPlan, setDraftPlan] = useState(null);
 
   // מצב למידה אקטיבי
   const [activeSession, setActiveSession] = useState(null);
@@ -272,6 +279,7 @@ export default function App() {
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
+  // שמירה אוטומטית של כל הקורסים והתכנים בדפדפן
   useEffect(() => {
     try {
       localStorage.setItem('medstudy_courses', JSON.stringify(courses));
@@ -339,7 +347,7 @@ export default function App() {
     );
   };
 
-  // שלב 1 -> שלב 1.5: בניית טיוטת תוכנית פדגוגית עם AI והצגתה לבקרה
+  // בניית טיוטת תוכנית פדגוגית עם AI
   const generateAIDraftPlan = async () => {
     if (files.length === 0 || !deadline || selectedDays.length === 0) {
       alert('אנא העלה לפחות קובץ אחד, בחר דדליין וסמן ימי לימוד.');
@@ -370,7 +378,6 @@ export default function App() {
       return;
     }
 
-    // אם יש מפתח API -> ה-AI מנתח את תוכן כל הקבצים ומסדר מהבסיס אל המתקדם
     if (apiKey.trim()) {
       setIsPlanningAI(true);
       try {
@@ -397,14 +404,13 @@ export default function App() {
           dates: studyDates,
           sessions: plannedSessions
         });
-        setStep(1.5); // מעבר למסך בקרה ואישור
+        setStep(1.5);
       } catch (err) {
         alert('שגיאה בתכנון האוטומטי מול ה-AI: ' + err.message);
       } finally {
         setIsPlanningAI(false);
       }
     } else {
-      // גיבוי ללא מפתח API
       const combinedText = files.map((f) => `--- קובץ: ${f.name} ---\n${f.text}`).join('\n\n');
       const chunkSize = Math.ceil(combinedText.length / studyDates.length);
 
@@ -429,7 +435,6 @@ export default function App() {
     }
   };
 
-  // פונקציות עריכה ובקרה בטיוטת התוכנית (שינוי סדר או כותרת)
   const moveDraftSession = (index, direction) => {
     const targetIdx = index + direction;
     if (targetIdx < 0 || targetIdx >= draftPlan.sessions.length) return;
@@ -446,7 +451,6 @@ export default function App() {
     setDraftPlan({ ...draftPlan, sessions: updated });
   };
 
-  // אישור סופי של התוכנית לאחר בקרה ושמירת הקורס
   const confirmAndSaveCourse = () => {
     if (!draftPlan) return;
 
@@ -460,7 +464,8 @@ export default function App() {
         rationale: s.rationale,
         textChunk: s.textChunk,
         duration: sessionDuration,
-        completed: false
+        completed: false,
+        savedContent: null // כאן יישמר חומר ה-AI לאחר הטעינה הראשונה
       };
     });
 
@@ -533,6 +538,7 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // התחלת סשן: טוען מהזיכרון ב-0 שניות אם כבר נוצר בעבר, או מייצר ושומר אוטומטית
   const startSession = async (session) => {
     setActiveSession(session);
     setActiveTab('learn');
@@ -553,13 +559,35 @@ export default function App() {
       }
     ]);
 
+    // אם התוכן כבר נוצר ונשמר בעבר -> הצג מיד ללא המתנה!
+    if (session.savedContent) {
+      setStudyContent(session.savedContent);
+      return;
+    }
+
     if (apiKey.trim()) {
       setIsLoadingAI(true);
       try {
         const aiData = await generateAIStudyMaterial(apiKey.trim(), session.topic, session.textChunk);
         setStudyContent(aiData);
+
+        // שמירת התוכן שנוצר בתוך הקורס ב-localStorage לכניסות הבאות
+        if (activeCourse) {
+          setCourses((prev) =>
+            prev.map((course) =>
+              course.id === activeCourse.id
+                ? {
+                    ...course,
+                    schedule: course.schedule.map((s) =>
+                      s.id === session.id ? { ...s, savedContent: aiData } : s
+                    )
+                  }
+                : course
+            )
+          );
+        }
       } catch (err) {
-        alert('שגיאה בחיבור ל-AI (בדוק שמפתח ה-API תקין): ' + err.message);
+        alert('שגיאה בחיבור ל-AI (בדוק שמפתח ה-API תקין או נסה שוב): ' + err.message);
         setStudyContent(getFallbackContent(session.topic));
       } finally {
         setIsLoadingAI(false);
@@ -596,7 +624,7 @@ export default function App() {
           body: JSON.stringify({
             contents: [{
               parts: [{
-                text: `אתה מורה פרטי לרפואה. ענה בעברית בצורה ברורה ותמציתית לשאלת הסטודנט על בסיס חומר הלימוד הבא:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 10000)}\n\nשאלת הסטודנט: ${userMsg}`
+                text: `אתה מורה פרטי לרפואה. ענה בעברית בצורה ברורה ותמציתית לשאלת הסטודנט על בסיס חומר הלימוד הבא:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 8000)}\n\nשאלת הסטודנט: ${userMsg}`
               }]
             }]
           })
@@ -974,7 +1002,7 @@ export default function App() {
           </div>
         )}
 
-        {/* מסך 1.5: בקרה ואישור תוכנית הלימודים שנבנתה על ידי ה-AI */}
+        {/* מסך 1.5: בקרה ואישור תוכנית הלימודים */}
         {step === 1.5 && draftPlan && (
           <div className="space-y-6 mt-4 max-w-4xl mx-auto">
             <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/40 space-y-4">
@@ -1129,6 +1157,9 @@ export default function App() {
                           <CheckCircle2 size={14} /> הושלם
                         </span>
                       )}
+                      {session.savedContent && !session.completed && (
+                        <span className="text-amber-500 text-[11px] font-semibold">• מוכן בזיכרון</span>
+                      )}
                     </div>
                     <h3 className="font-semibold text-base">{session.topic}</h3>
                     {session.rationale && (
@@ -1160,8 +1191,8 @@ export default function App() {
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
               <Loader2 size={44} className="text-blue-500 animate-spin" />
-              <h3 className="text-lg font-bold">המרצה הדיגיטלי קורא את הקבצים שלך...</h3>
-              <p className="text-sm text-slate-400">מכין סיכום קליני, כרטיסיות, בוחן ומקרי חירום למשחק מתוך החומר שהעלית</p>
+              <h3 className="text-lg font-bold">המרצה הדיגיטלי קורא את החומר...</h3>
+              <p className="text-sm text-slate-400">מכין סיכום קליני, כרטיסיות, בוחן ומקרי חירום (יישמר בזיכרון לכניסות הבאות)</p>
             </div>
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
