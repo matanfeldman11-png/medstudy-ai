@@ -114,9 +114,6 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs =
   throw lastError;
 } 
 
-  throw lastError;
-}
-
 // 1. מנוע תכנון פדגוגי מהיר מבוסס AI (מחלק קבצים גדולים לתתי-פרקים כדי שלא יחסר חומר)
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
