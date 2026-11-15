@@ -72,11 +72,10 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  // שמות מודלים מדויקים המותאמים ל-v1beta API למניעת שגיאות 404
+  // שמות מודלים נכונים ומעודכנים ל-v1beta API
   const models = [
-    { name: 'gemini-1.5-flash', timeout: 45000 },
-    { name: 'gemini-1.5-pro', timeout: 45000 },
-    { name: 'gemini-pro', timeout: 60000 }
+    { name: 'gemini-2.5-flash', timeout: 45000 },
+    { name: 'gemini-1.5-flash', timeout: 60000 }
   ];
   let lastError = null;
 
@@ -245,7 +244,7 @@ const getFallbackContent = (topic) => ({
 });
 
 export default function App() {
-  const [darkMode, setDarkMode] = useState(false); // ברירת מחדל מצב יום נקי
+  const [darkMode, setDarkMode] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
@@ -1536,7 +1535,7 @@ export default function App() {
                           onClick={() => { setQuizAnswers({}); setQuizSubmitted(false); }}
                           className="text-xs underline flex items-center gap-1 font-semibold"
                         >
-                          <RotateCcw size={14} /> נסה שוב
+                          <RotateCcw size={14} className="נסה שוב" /> נסה שוב
                         </button>
                       </div>
                     )}
