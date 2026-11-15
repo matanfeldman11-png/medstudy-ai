@@ -146,19 +146,36 @@ const getFallbackContent = (topic) => ({
     }
   ]
 });
+
 export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
-  const [files, setFiles] = useState([]);
+  // טעינה אוטומטית מהזיכרון המקומי של הדפדפן כדי שהמידע לא יימחק ברענון
+  const [files, setFiles] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('medstudy_files')) || []; } catch { return []; }
+  });
   const [isParsingFiles, setIsParsingFiles] = useState(false);
-  const [deadline, setDeadline] = useState('');
-  const [selectedDays, setSelectedDays] = useState([0, 2, 4]);
-  const [sessionDuration, setSessionDuration] = useState(45);
-  const [schedule, setSchedule] = useState([]);
+  const [deadline, setDeadline] = useState(() => localStorage.getItem('medstudy_deadline') || '');
+  const [selectedDays, setSelectedDays] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('medstudy_days')) || [0, 2, 4]; } catch { return [0, 2, 4]; }
+  });
+  const [sessionDuration, setSessionDuration] = useState(() => Number(localStorage.getItem('medstudy_duration')) || 45);
+  const [schedule, setSchedule] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('medstudy_schedule')) || [];
+      return saved.map((s) => ({ ...s, rawDate: new Date(s.rawDate) }));
+    } catch { return []; }
+  });
   
-  const [step, setStep] = useState(1);
+  const [step, setStep] = useState(() => {
+    try {
+      const savedSchedule = JSON.parse(localStorage.getItem('medstudy_schedule')) || [];
+      return savedSchedule.length > 0 ? 2 : 1;
+    } catch { return 1; }
+  });
+
   const [activeSession, setActiveSession] = useState(null);
   const [studyContent, setStudyContent] = useState(null);
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -187,6 +204,19 @@ export default function App() {
   const [patientStability, setPatientStability] = useState(100);
   const [streak, setStreak] = useState(0);
   const [gameOver, setGameOver] = useState(false);
+
+  // שמירה אוטומטית בדפדפן בכל שינוי בקבצים, בלו"ז או בהגדרות
+  useEffect(() => {
+    try {
+      localStorage.setItem('medstudy_files', JSON.stringify(files));
+      localStorage.setItem('medstudy_deadline', deadline);
+      localStorage.setItem('medstudy_days', JSON.stringify(selectedDays));
+      localStorage.setItem('medstudy_duration', String(sessionDuration));
+      localStorage.setItem('medstudy_schedule', JSON.stringify(schedule));
+    } catch (e) {
+      console.warn('חריגה מנפח האחסון המקומי בדפדפן');
+    }
+  }, [files, deadline, selectedDays, sessionDuration, schedule]);
 
   useEffect(() => {
     if (!gameStarted || gameOver || activeTab !== 'game') return;
@@ -453,6 +483,7 @@ export default function App() {
       setGameOver(true);
     }
   };
+
   return (
     <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen' : 'bg-slate-50 text-slate-900 min-h-screen'}>
       <header className="border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex justify-between items-center sticky top-0 backdrop-blur-md bg-white/80 dark:bg-slate-950/80 z-20">
@@ -684,6 +715,20 @@ export default function App() {
                   className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800"
                 >
                   ערוך הגדרות
+                </button>
+                <button
+                  onClick={() => {
+                    if (confirm('למחוק את התוכנית והקבצים הנוכחיים ולהתחיל מחדש?')) {
+                      localStorage.removeItem('medstudy_files');
+                      localStorage.removeItem('medstudy_schedule');
+                      setFiles([]);
+                      setSchedule([]);
+                      setStep(1);
+                    }
+                  }}
+                  className="px-4 py-2.5 rounded-xl border border-red-500/40 text-red-500 text-sm font-medium hover:bg-red-500/10"
+                >
+                  התחל קורס חדש
                 </button>
               </div>
             </div>
