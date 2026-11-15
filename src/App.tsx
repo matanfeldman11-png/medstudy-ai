@@ -1160,7 +1160,7 @@ export default function App() {
   };
 
   return (
-    <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen' : 'bg-slate-50 text-slate-900 min-h-screen'}>
+    <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen flex flex-col' : 'bg-slate-50 text-slate-900 min-h-screen flex flex-col'}>
       <header className="border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex justify-between items-center sticky top-0 backdrop-blur-md bg-white/90 dark:bg-slate-950/90 z-20">
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep(courses.length > 0 ? 0 : 1)}>
           <div className="bg-blue-600 p-2 rounded-xl text-white">
@@ -1252,7 +1252,7 @@ export default function App() {
         </div>
       )}
 
-      <main className="max-w-6xl mx-auto p-6">
+      <main className="max-w-6xl mx-auto p-6 flex-1 w-full">
         {step === 0 && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -2146,6 +2146,10 @@ export default function App() {
           )
         )}
       </main>
+
+      <footer className="border-t border-slate-200 dark:border-slate-800 py-4 px-6 text-center text-xs text-slate-500 dark:text-slate-400 mt-8">
+        © {new Date().getFullYear()} כל הזכויות שמורות למתן פלדמן
+      </footer>
     </div>
   );
 }
