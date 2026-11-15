@@ -73,11 +73,12 @@ function getSmartCoveredText(text, maxChars = 25000) {
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   const models = [
-    { name: 'gemini-3.8-flash', timeout: 15000 },
-    { name: 'gemini-3.5-flash-lite', timeout: 25000 }
+    { name: 'gemini-2.5-flash', timeout: 45000 },
+    { name: 'gemini-1.5-flash', timeout: 45000 },
+    { name: 'gemini-3.5-flash-lite', timeout: 45000 }
   ];
   let lastError = null;
-  
+
   for (const m of models) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), m.timeout);
