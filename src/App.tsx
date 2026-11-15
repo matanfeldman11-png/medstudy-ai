@@ -72,11 +72,10 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  // מודלים מתקדמים בראש הרשימה, ומודל יציב כגיבוי אחרון בהחלט
   const models = [
     { name: 'gemini-2.5-flash', timeout: 45000 },
     { name: 'gemini-3.5-flash-lite', timeout: 45000 },
-    { name: 'gemini-1.5-flash', timeout: 60000 } // גיבוי אחרון ויציב
+    { name: 'gemini-1.5-flash', timeout: 60000 }
   ];
   let lastError = null;
 
@@ -106,7 +105,6 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
       return data.candidates[0].content.parts[0].text;
     } catch (err) {
       lastError = err;
-      // אם המודל הנוכחי עמוס או נכשל, המערכת תעבור אוטומטית למודל הבא ברשימה
     } finally {
       clearTimeout(timeoutId);
     }
@@ -144,51 +142,26 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
   return JSON.parse(jsonText);
 }
 
-// יצירת יחידת לימוד מורחבת המכילה בדיוק 8 כותרות, ותחת כל כותרת לפחות 10 משפטים מפורטים
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
   const coveredText = getSmartCoveredText(rawTextChunk, 25000);
 
   const prompt = `מרצה בכיר לסיעוד: בנה יחידת לימוד אקדמית, מקיפה ומעמיקה מאוד בעברית לנושא "${topic}" מתוך טקסט החובה המצורף.
 דרישות קפדניות לשדה הלימוד (sections):
 - עליך לחשוב על ולבנות בדיוק 8 כותרות מרכזיות (sections) המכסות את כלל החומר הקליני והפתופיזיולוגי.
-- תחת כל אחת מה-8 כותרות, שדה התוכן (content) חייב להכיל **לפחות 10 משפטים מלאים, ארוכים ומפורטים** העוסקים ברציונל הרפואי, בפתופיזיולוגיה, בהערכה הסיעודית ובטיפול הקליני. אל תסתפק במשפטים קצרים!
+- תחת כל אחת מה-8 כותרות, שדה התוכן (content) חייב להכיל **לפחות 10 משפטים מלאים, ארוכים ומפורטים** העוסקים ברציונל הרפואי, בפתופיזיולוגיה, בהערכה הסיעודית ובטיפול הקליני.
 - בנוסף, ספק 10 כרטיסיות שינון מפורטות, בוחן של בדיוק 10 שאלות עם הסברי שגיאות, ו-3 מקרי Code Blue.
 
 החזר JSON תקין בלבד במבנה הבא:
 {
   "sections": [
-    {
-      "title": "כותרת ראשונה בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף המנתחים את הנושא לעומק ומסבירים את כל ההיבטים הקליניים והסיעודיים..."
-    },
-    {
-      "title": "כותרת שנייה בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    },
-    {
-      "title": "כותרת שלישית בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    },
-    {
-      "title": "כותרת רביעית בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    },
-    {
-      "title": "כותרת חמישית בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    },
-    {
-      "title": "כותרת שישית בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    },
-    {
-      "title": "כותרת שביעית בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    },
-    {
-      "title": "כותרת שמינית בנושא",
-      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
-    }
+    { "title": "כותרת 1", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 2", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 3", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 4", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 5", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 6", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 7", "content": "10 משפטים מלאים ומפורטים..." },
+    { "title": "כותרת 8", "content": "10 משפטים מלאים ומפורטים..." }
   ],
   "comparisonTable": [
     {"param": "פרמטר", "acute": "ממצא א׳", "chronic": "ממצא ב׳"}
@@ -271,7 +244,7 @@ const getFallbackContent = (topic) => ({
 });
 
 export default function App() {
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(false); // ברירת מחדל מצב יום (false)
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
@@ -321,6 +294,7 @@ export default function App() {
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [knownCards, setKnownCards] = useState([]);
+  const [isRegeneratingCards, setIsRegeneratingCards] = useState(false);
 
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
@@ -612,6 +586,7 @@ export default function App() {
       }
     ]);
 
+    // אם התוכן כבר קיים (שמור), נשתמש בו מיד בלי לייצר מחדש
     if (session.savedContent) {
       setStudyContent(session.savedContent);
       return;
@@ -648,6 +623,58 @@ export default function App() {
     }
   };
 
+  const regenerateNewCards = async () => {
+    if (!apiKey.trim()) {
+      alert('יש לחבר מפתח AI בהגדרות כדי לייצר כרטיסיות חדשות.');
+      return;
+    }
+    setIsRegeneratingCards(true);
+    try {
+      const freshCardsPrompt = `צור 10 כרטיסיות שינון קליניות חדשות (flashcards) בעברית אך ורק מתוך טקסט החומר הבא.
+החזר JSON תקין בלבד במבנה מערך:
+[
+  {"id": 1, "front": "מושג חדש 1", "back": "הסבר מפורט 1"},
+  {"id": 2, "front": "מושג חדש 2", "back": "הסבר מפורט 2"},
+  {"id": 3, "front": "מושג חדש 3", "back": "הסבר מפורט 3"},
+  {"id": 4, "front": "מושג חדש 4", "back": "הסבר מפורט 4"},
+  {"id": 5, "front": "מושג חדש 5", "back": "הסבר מפורט 5"},
+  {"id": 6, "front": "מושג חדש 6", "back": "הסבר מפורט 6"},
+  {"id": 7, "front": "מושג חדש 7", "back": "הסבר מפורט 7"},
+  {"id": 8, "front": "מושג חדש 8", "back": "הסבר מפורט 8"},
+  {"id": 9, "front": "מושג חדש 9", "back": "הסבר מפורט 9"},
+  {"id": 10, "front": "מושג חדש 10", "back": "הסבר מפורט 10"}
+]
+טקסט: ${activeSession.textChunk.slice(0, 15000)}`;
+
+      const resText = await callGeminiWithFallback(apiKey.trim(), freshCardsPrompt, true);
+      const newCardsData = JSON.parse(resText);
+      setStudyContent((prev) => {
+        const updated = { ...prev, flashcards: newCardsData };
+        // עדכון גם בקורסים השמורים
+        if (activeCourse) {
+          setCourses((cList) =>
+            cList.map((c) =>
+              c.id === activeCourse.id
+                ? {
+                    ...c,
+                    schedule: c.schedule.map((s) => (s.id === activeSession.id ? { ...s, savedContent: updated } : s))
+                  }
+                : c
+            )
+          );
+        }
+        return updated;
+      });
+      setCardIndex(0);
+      setIsFlipped(false);
+      setKnownCards([]);
+    } catch (err) {
+      alert('שגיאה ביצירת כרטיסיות חדשות: ' + err.message);
+    } finally {
+      setIsRegeneratingCards(false);
+    }
+  };
+
   const regenerateNewQuiz = async () => {
     if (!apiKey.trim()) {
       alert('יש לחבר מפתח AI בהגדרות כדי לייצר בוחן חדש.');
@@ -669,7 +696,22 @@ export default function App() {
 
       const resText = await callGeminiWithFallback(apiKey.trim(), freshQuizPrompt, true);
       const newQuizData = JSON.parse(resText);
-      setStudyContent((prev) => ({ ...prev, chapterQuiz: newQuizData }));
+      setStudyContent((prev) => {
+        const updated = { ...prev, chapterQuiz: newQuizData };
+        if (activeCourse) {
+          setCourses((cList) =>
+            cList.map((c) =>
+              c.id === activeCourse.id
+                ? {
+                    ...c,
+                    schedule: c.schedule.map((s) => (s.id === activeSession.id ? { ...s, savedContent: updated } : s))
+                  }
+                : c
+            )
+          );
+        }
+        return updated;
+      });
       setQuizAnswers({});
       setQuizSubmitted(false);
     } catch (err) {
@@ -761,7 +803,7 @@ export default function App() {
 
   return (
     <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen' : 'bg-slate-50 text-slate-900 min-h-screen'}>
-      <header className="border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex justify-between items-center sticky top-0 backdrop-blur-md bg-white/80 dark:bg-slate-950/80 z-20">
+      <header className="border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex justify-between items-center sticky top-0 backdrop-blur-md bg-white/90 dark:bg-slate-950/90 z-20">
         <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep(courses.length > 0 ? 0 : 1)}>
           <div className="bg-blue-600 p-2 rounded-xl text-white">
             <BookOpen size={24} />
@@ -803,6 +845,7 @@ export default function App() {
           <button
             onClick={() => setDarkMode(!darkMode)}
             className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-900 transition"
+            title={darkMode ? 'עבור למצב יום' : 'עבור למצב לילה'}
           >
             {darkMode ? <Sun size={20} className="text-amber-400" /> : <Moon size={20} className="text-slate-600" />}
           </button>
@@ -826,11 +869,11 @@ export default function App() {
                 value={apiKey}
                 onChange={(e) => saveApiKey(e.target.value)}
                 placeholder="הדבק כאן מפתח AIza..."
-                className="flex-1 sm:w-72 bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm outline-none focus:border-blue-500"
+                className="flex-1 sm:w-72 bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm outline-none focus:border-blue-500 text-white"
               />
               <button
                 onClick={() => setShowSettings(false)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-sm font-semibold"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-sm font-semibold text-white"
               >
                 שמור
               </button>
@@ -842,7 +885,7 @@ export default function App() {
       <main className="max-w-6xl mx-auto p-6">
         {step === 0 && (
           <div className="space-y-6 mt-4">
-            <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
+            <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div>
                 <h2 className="text-2xl font-bold">הקורסים שלי בסיעוד</h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -871,7 +914,7 @@ export default function App() {
                       setActiveCourseId(course.id);
                       setStep(2);
                     }}
-                    className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-blue-500 transition cursor-pointer flex flex-col justify-between space-y-5 group"
+                    className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-blue-500 transition cursor-pointer flex flex-col justify-between space-y-5 group shadow-sm"
                   >
                     <div className="space-y-2">
                       <div className="flex justify-between items-start gap-2">
@@ -886,7 +929,7 @@ export default function App() {
                         </button>
                       </div>
                       <h3 className="text-lg font-bold group-hover:text-blue-500 transition">{course.title}</h3>
-                      <p className="text-xs text-slate-500">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
                         {course.filesCount} קבצים • {totalCount} סשנים של {course.sessionDuration} דק׳
                       </p>
                     </div>
@@ -952,7 +995,7 @@ export default function App() {
                           <FileText size={18} className="text-blue-500 shrink-0" />
                           <div className="truncate">
                             <p className="text-sm font-medium truncate">{file.name}</p>
-                            <p className="text-xs text-slate-500">{file.type} • {file.wordCount.toLocaleString()} מילים</p>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">{file.type} • {file.wordCount.toLocaleString()} מילים</p>
                           </div>
                         </div>
                         <button onClick={() => removeFile(file.id)} className="text-slate-400 hover:text-red-500 p-1">
@@ -1068,7 +1111,7 @@ export default function App() {
 
         {step === 1.5 && draftPlan && (
           <div className="space-y-6 mt-4 max-w-4xl mx-auto">
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/40 space-y-4">
+            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/40 space-y-4 shadow-sm">
               <div className="flex flex-wrap justify-between items-start gap-4">
                 <div>
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-500 flex items-center gap-1.5 w-fit">
@@ -1110,7 +1153,7 @@ export default function App() {
                         {idx + 1}
                       </span>
                       <div className="space-y-1.5 flex-1">
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                           <span className="font-semibold text-blue-500">
                             {draftPlan.dates[idx]?.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'short' })}
                           </span>
@@ -1123,7 +1166,7 @@ export default function App() {
                           onChange={(e) => updateDraftSessionTitle(idx, e.target.value)}
                           className="w-full font-bold text-sm bg-transparent border-b border-transparent focus:border-blue-500 outline-none py-0.5"
                         />
-                        <p className="text-xs text-emerald-500/90 flex items-center gap-1">
+                        <p className="text-xs text-emerald-500 flex items-center gap-1">
                           <Sparkles size={12} /> {item.rationale}
                         </p>
                       </div>
@@ -1162,7 +1205,7 @@ export default function App() {
 
         {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
-            <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
+            <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div className="space-y-1 max-w-2xl">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold px-2.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500">קורס פעיל</span>
@@ -1194,7 +1237,7 @@ export default function App() {
               {activeCourse.schedule.map((session) => (
                 <div
                   key={session.id}
-                  className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition flex items-center justify-between gap-3 ${
+                  className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition flex items-center justify-between gap-3 shadow-sm ${
                     session.completed ? 'border-emerald-500/50 bg-emerald-500/5' : 'border-slate-200 dark:border-slate-800 hover:border-blue-500/50'
                   }`}
                 >
@@ -1211,9 +1254,9 @@ export default function App() {
                     </div>
                     <h3 className="font-semibold text-base">{session.topic}</h3>
                     {session.rationale && (
-                      <p className="text-xs text-slate-400">{session.rationale}</p>
+                      <p className="text-xs text-slate-400 dark:text-slate-500">{session.rationale}</p>
                     )}
-                    <div className="flex items-center gap-1.5 text-xs text-slate-500 pt-0.5">
+                    <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 pt-0.5">
                       <Clock size={14} />
                       <span>{session.duration} דקות למידה</span>
                     </div>
@@ -1244,7 +1287,7 @@ export default function App() {
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
               <div className="lg:col-span-7 space-y-5">
-                <div className="grid grid-cols-4 gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <div className="grid grid-cols-4 gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                   {[
                     { id: 'learn', label: 'לימוד הפרק', icon: BookOpen },
                     { id: 'flashcards', label: `כרטיסיות (${studyContent.flashcards?.length || 10})`, icon: Layers },
@@ -1272,7 +1315,7 @@ export default function App() {
 
                 {activeTab === 'learn' && (
                   <>
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
                       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
                         <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות למידה</span>
                         <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
@@ -1284,7 +1327,7 @@ export default function App() {
                         </h3>
 
                         {studyContent.sections?.map((sec, idx) => (
-                          <div key={idx} className="space-y-2.5 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80">
+                          <div key={idx} className="space-y-2.5 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
                             <h4 className="font-bold text-base text-blue-600 dark:text-blue-400 flex items-center gap-2">
                               <span className="bg-blue-600 text-white text-xs w-6 h-6 rounded-lg flex items-center justify-center shrink-0">{idx + 1}</span>
                               {sec.title}
@@ -1321,7 +1364,7 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/30 space-y-4">
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/30 space-y-4 shadow-sm">
                       <div className="flex items-center gap-2 text-blue-500 font-bold">
                         <HelpCircle size={20} />
                         <h3>וידוא הבנה ראשוני (לסימון השלמת המשימה)</h3>
@@ -1367,23 +1410,33 @@ export default function App() {
                 )}
 
                 {activeTab === 'flashcards' && (
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
+                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
                     <div className="flex justify-between items-center">
                       <h3 className="font-bold text-lg">כרטיסיות שינון (10 כרטיסיות) - {cardIndex + 1} / {studyContent.flashcards.length}</h3>
-                      <span className="text-xs bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full font-semibold">
-                        נשלטות: {knownCards.length}/{studyContent.flashcards.length}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={regenerateNewCards}
+                          disabled={isRegeneratingCards}
+                          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
+                        >
+                          <RotateCcw size={14} className={isRegeneratingCards ? 'animate-spin' : ''} />
+                          צור 10 כרטיסיות חדשות
+                        </button>
+                        <span className="text-xs bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full font-semibold">
+                          נשלטות: {knownCards.length}/{studyContent.flashcards.length}
+                        </span>
+                      </div>
                     </div>
 
                     <div
                       onClick={() => setIsFlipped(!isFlipped)}
-                      className="min-h-[260px] rounded-2xl border-2 border-blue-500/30 bg-slate-50 dark:bg-slate-950 p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-500 transition select-none"
+                      className="min-h-[260px] rounded-2xl border-2 border-blue-500/30 bg-slate-50 dark:bg-slate-950 p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-500 transition select-none shadow-inner"
                     >
                       <span className="text-xs uppercase tracking-wider text-blue-500 font-bold mb-3">
                         {isFlipped ? 'הסבר קליני מלא' : 'מושג / מונח סיעודי (לחץ להיפוך)'}
                       </span>
                       <p className="text-lg font-semibold leading-relaxed">
-                        {isFlipped ? studyContent.flashcards[cardIndex].back : studyContent.flashcards[cardIndex].front}
+                        {isFlipped ? studyContent.flashcards[cardIndex]?.back : studyContent.flashcards[cardIndex]?.front}
                       </p>
                     </div>
 
@@ -1399,8 +1452,8 @@ export default function App() {
                       </button>
                       <button
                         onClick={() => {
-                          const currentId = studyContent.flashcards[cardIndex].id;
-                          if (!knownCards.includes(currentId)) setKnownCards([...knownCards, currentId]);
+                          const currentId = studyContent.flashcards[cardIndex]?.id;
+                          if (currentId && !knownCards.includes(currentId)) setKnownCards([...knownCards, currentId]);
                           setIsFlipped(false);
                           setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
                         }}
@@ -1413,7 +1466,7 @@ export default function App() {
                 )}
 
                 {activeTab === 'quiz' && (
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
+                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
                     <div className="flex justify-between items-center">
                       <h3 className="font-bold text-lg">בוחן אמריקאי מסכם (10 שאלות): {activeSession.topic}</h3>
                       <button
@@ -1492,7 +1545,7 @@ export default function App() {
                 )}
 
                 {activeTab === 'game' && (
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-rose-500/40 space-y-6">
+                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-rose-500/40 space-y-6 shadow-sm">
                     {!gameStarted ? (
                       <div className="text-center py-8 space-y-4">
                         <div className="bg-rose-500/10 text-rose-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto">
@@ -1562,14 +1615,14 @@ export default function App() {
               </div>
 
               <div className="lg:col-span-5">
-                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col h-[620px] sticky top-24">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col h-[620px] sticky top-24 shadow-sm">
                   <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2.5">
                     <div className="bg-blue-600/10 text-blue-500 p-2 rounded-lg">
                       <MessageSquare size={18} />
                     </div>
                     <div>
                       <h3 className="font-bold text-sm">מרצה קליני (AI Nursing Tutor)</h3>
-                      <p className="text-xs text-slate-500">מבוסס על חומר הלימוד שלך</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">מבוסס על חומר הלימוד שלך</p>
                     </div>
                   </div>
 
@@ -1599,7 +1652,7 @@ export default function App() {
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
                       placeholder="שאל שאלה קלינית על החומר..."
-                      className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                      className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
                     />
                     <button
                       type="submit"
