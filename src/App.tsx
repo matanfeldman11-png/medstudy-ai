@@ -72,28 +72,7 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  // 1. שואלים את ה-API אילו מודלים באמת זמינים תחת מפתח ה-API שלך ברגע זה
-  let modelName = 'gemini-1.5-flash'; // ברירת מחדל בטוחה
-  try {
-    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-    const listData = await listRes.json();
-    if (listData && listData.models) {
-      // מחפשים את המודל הראשון שתומך ביצירת תוכן (generateContent)
-      const validModel = listData.models.find(m => 
-        m.supportedGenerationMethods && 
-        m.supportedGenerationMethods.includes('generateContent') &&
-        (m.name.includes('flash') || m.name.includes('pro'))
-      );
-      if (validModel) {
-        // מנקים את הקידומת 'models/' אם קיימת כדי לקבל את השם הנקי
-        modelName = validModel.name.replace('models/', '');
-      }
-    }
-  } catch (e) {
-    console.warn('שגיאה באיתור דינמי של המודל, משתמש בברירת מחדל');
-  }
-
-  // 2. מבצעים את הקריאה עם השם האמיתי והמאומת שנמצא
+  const modelName = 'gemini-1.5-flash';
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 60000);
 
@@ -121,12 +100,11 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
     }
     throw new Error('תגובה ריקה מהשרת');
   } catch (err) {
-    throw new Error(`שגיאה בחיבור ל-AI (מודל בשימוש: ${modelName}): ${err.message}`);
+    throw new Error(`שגיאה בחיבור ל-AI: ${err.message}`);
   } finally {
     clearTimeout(timeoutId);
   }
 }
-
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
     fileIndex: idx,
