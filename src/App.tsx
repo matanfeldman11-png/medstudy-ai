@@ -72,49 +72,59 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  // רשימת מודלים מעודכנת וישירה ללא תלות ב-listModels
-  const models = [
-    'gemini-2.5-flash',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro'
-  ];
-  let lastError = null;
-
-  for (const modelName of models) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-    try {
-      const generationConfig = {};
-      if (isJson) generationConfig.responseMimeType = 'application/json';
-
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig
-          })
-        }
+  // 1. שואלים את ה-API אילו מודלים באמת זמינים תחת מפתח ה-API שלך ברגע זה
+  let modelName = 'gemini-1.5-flash'; // ברירת מחדל בטוחה
+  try {
+    const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    const listData = await listRes.json();
+    if (listData && listData.models) {
+      // מחפשים את המודל הראשון שתומך ביצירת תוכן (generateContent)
+      const validModel = listData.models.find(m => 
+        m.supportedGenerationMethods && 
+        m.supportedGenerationMethods.includes('generateContent') &&
+        (m.name.includes('flash') || m.name.includes('pro'))
       );
-
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message);
-      if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
-        return data.candidates[0].content.parts[0].text;
+      if (validModel) {
+        // מנקים את הקידומת 'models/' אם קיימת כדי לקבל את השם הנקי
+        modelName = validModel.name.replace('models/', '');
       }
-      throw new Error('תגובה ריקה מהשרת');
-    } catch (err) {
-      lastError = err;
-    } finally {
-      clearTimeout(timeoutId);
     }
+  } catch (e) {
+    console.warn('שגיאה באיתור דינמי של המודל, משתמש בברירת מחדל');
   }
 
-  throw new Error('כל המודלים נכשלו. שגיאה אחרונה: ' + (lastError?.message || 'לא ידועה'));
+  // 2. מבצעים את הקריאה עם השם האמיתי והמאומת שנמצא
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const generationConfig = {};
+    if (isJson) generationConfig.responseMimeType = 'application/json';
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig
+        })
+      }
+    );
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+      return data.candidates[0].content.parts[0].text;
+    }
+    throw new Error('תגובה ריקה מהשרת');
+  } catch (err) {
+    throw new Error(`שגיאה בחיבור ל-AI (מודל בשימוש: ${modelName}): ${err.message}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
