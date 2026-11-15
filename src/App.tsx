@@ -4,7 +4,8 @@ import {
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
   Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
-  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck, User, History, Target
+  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck, User, History, Target,
+  Printer, AlertTriangle, RefreshCw, X
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -485,6 +486,33 @@ async function generateQuizOnly(apiKey: string, rawTextChunk: string, duration: 
   return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
 }
 
+async function generateMistakesMarathonQuiz(apiKey: string, mistakesBank: any[]) {
+  const summary = mistakesBank.slice(0, 20).map((m) => ({
+    topic: m.sessionTopic,
+    question: m.question,
+    wrongChoice: m.userAnswer,
+    correctAnswer: m.correctAnswer,
+  }));
+
+  const count = Math.min(Math.max(mistakesBank.length, 4), 10);
+  const prompt = `אתה מרצה בכיר לסיעוד. סטודנט/ית צבר/ה את הטעויות הבאות לאורך הקורס:
+${JSON.stringify(summary, null, 2)}
+
+בנה מרתון של ${count} שאלות תרגול חדשות וממוקדות בעברית (4 אפשרויות לכל שאלה) שבודקות בדיוק את הנושאים ונקודות התורפה שבהן הסטודנט/ית טעה/תה, ברמת מבחן ממשלתי בסיעוד.
+החזר מערך JSON תקין בלבד:
+[
+  {
+    "q": "שאלה קלינית חדשה לבדיקת התיקון",
+    "opts": ["אפשרות א", "אפשרות ב", "אפשרות ג", "אפשרות ד"],
+    "ans": 0,
+    "explanation": "הסבר קליני מלא המבהיר את המלכודת הקודמת"
+  }
+]`;
+
+  const parsed = await callGeminiWithFallback(apiKey, prompt, true);
+  return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
+}
+
 async function generateCodeBlueOnly(apiKey: string, rawTextChunk: string) {
   const prompt = `צור 4 תרחישי חירום / התערבות סיעודית (Code Blue) בעברית מתוך החומר הבא.
 החזר מערך JSON תקין בלבד:
@@ -591,10 +619,13 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
 
-  // כרטיסיות
+  // כרטיסיות + Spaced Repetition
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [knownCards, setKnownCards] = useState<number[]>([]);
+  const [warmupCardIdx, setWarmupCardIdx] = useState(0);
+  const [warmupFlipped, setWarmupFlipped] = useState(false);
+  const [showWarmupBanner, setShowWarmupBanner] = useState(true);
 
   // בוחן מסכם + היסטוריה + המלצות חזרה
   const [activeQuizAttemptIdx, setActiveQuizAttemptIdx] = useState<number>(0);
@@ -615,6 +646,15 @@ export default function App() {
   const [codeBlueWeaknessFeedback, setCodeBlueWeaknessFeedback] = useState<string>('');
   const [isAnalyzingCodeBlue, setIsAnalyzingCodeBlue] = useState(false);
 
+  // מודאל מרתון טעויות + תצוגת סיכום כיס להדפסה
+  const [showMistakesModal, setShowMistakesModal] = useState(false);
+  const [marathonQuestions, setMarathonQuestions] = useState<any[] | null>(null);
+  const [marathonAnswers, setMarathonAnswers] = useState<Record<number, number>>({});
+  const [marathonSubmitted, setMarathonSubmitted] = useState(false);
+  const [isGeneratingMarathon, setIsGeneratingMarathon] = useState(false);
+
+  const [pocketSummaryScope, setPocketSummaryScope] = useState<'session' | 'course' | null>(null);
+
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
   useEffect(() => {
@@ -633,6 +673,8 @@ export default function App() {
         }
         const hydrated = loaded.map((c: any) => ({
           ...c,
+          mistakesBank: c.mistakesBank || [],
+          reviewCardsBank: c.reviewCardsBank || [],
           schedule: (c.schedule || []).map((s: any) => ({ ...s, rawDate: new Date(s.rawDate) })),
         }));
         setCourses(hydrated);
@@ -669,6 +711,88 @@ export default function App() {
   const saveUserName = (val: string) => {
     setUserName(val);
     localStorage.setItem('medstudy_user_name', val);
+  };
+
+  // הוספת טעויות לבנק הטעויות של הקורס (ללא כפילויות)
+  const recordMistakesToCourseBank = (
+    newMistakes: {
+      source: string;
+      sessionTopic: string;
+      question: string;
+      userAnswer: string;
+      correctAnswer: string;
+      rationale?: string;
+    }[]
+  ) => {
+    if (!activeCourse || newMistakes.length === 0) return;
+    setCourses((prev) =>
+      prev.map((c) => {
+        if (c.id !== activeCourse.id) return c;
+        const existing = c.mistakesBank || [];
+        const merged = [...existing];
+        newMistakes.forEach((m) => {
+          const alreadyExists = merged.some((ex: any) => ex.question === m.question);
+          if (!alreadyExists) {
+            merged.unshift({
+              id: 'err-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+              createdAt: new Date().toLocaleDateString('he-IL'),
+              ...m,
+            });
+          }
+        });
+        return { ...c, mistakesBank: merged };
+      })
+    );
+  };
+
+  const removeMistakeFromBank = (mistakeId: string) => {
+    if (!activeCourse) return;
+    setCourses((prev) =>
+      prev.map((c) =>
+        c.id === activeCourse.id
+          ? { ...c, mistakesBank: (c.mistakesBank || []).filter((m: any) => m.id !== mistakeId) }
+          : c
+      )
+    );
+  };
+
+  // ניהול תור חזרות מרווחות בכרטיסיות (Spaced Repetition)
+  const addCardToSpacedRepetition = (card: { front: string; back: string }, sessionTopic: string) => {
+    if (!activeCourse) return;
+    setCourses((prev) =>
+      prev.map((c) => {
+        if (c.id !== activeCourse.id) return c;
+        const existing = c.reviewCardsBank || [];
+        if (existing.some((item: any) => item.front === card.front)) return c;
+        return {
+          ...c,
+          reviewCardsBank: [
+            ...existing,
+            {
+              id: 'sr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+              front: card.front,
+              back: card.back,
+              sessionTopic,
+              addedAt: new Date().toLocaleDateString('he-IL'),
+            },
+          ],
+        };
+      })
+    );
+  };
+
+  const removeCardFromSpacedRepetition = (cardFront: string) => {
+    if (!activeCourse) return;
+    setCourses((prev) =>
+      prev.map((c) =>
+        c.id === activeCourse.id
+          ? {
+              ...c,
+              reviewCardsBank: (c.reviewCardsBank || []).filter((item: any) => item.front !== cardFront),
+            }
+          : c
+      )
+    );
   };
 
   const openNewCourseForm = () => {
@@ -885,6 +1009,8 @@ export default function App() {
       sessionDuration,
       filesCount: files.length,
       schedule: combinedSchedule,
+      mistakesBank: [],
+      reviewCardsBank: [],
       createdAt: new Date().toLocaleDateString('he-IL'),
     };
 
@@ -967,7 +1093,6 @@ export default function App() {
     });
   };
 
-  // סנכרון ניסיון בוחן בהיסטוריה
   const loadQuizAttemptState = (attempt: any, idx: number) => {
     setActiveQuizAttemptIdx(idx);
     setQuizAnswers(attempt.answers || {});
@@ -975,7 +1100,6 @@ export default function App() {
     setQuizWeaknessFeedback(attempt.weaknessFeedback || '');
   };
 
-  // סנכרון ניסיון Code Blue בהיסטוריה
   const loadCodeBlueAttemptState = (attempt: any, idx: number) => {
     setActiveCodeBlueAttemptIdx(idx);
     setCodeBlueAnswers(attempt.answers || {});
@@ -1004,6 +1128,9 @@ export default function App() {
     setCardIndex(0);
     setIsFlipped(false);
     setKnownCards([]);
+    setWarmupCardIdx(0);
+    setWarmupFlipped(false);
+    setShowWarmupBanner(true);
     setQuizAnswers({});
     setQuizSubmitted(false);
     setQuizWeaknessFeedback('');
@@ -1024,7 +1151,6 @@ export default function App() {
 
     if (session.savedContent?.blocks) {
       let existing = { ...session.savedContent };
-      // מיגרציה לאחור אם קיים בוחן או Code Blue ישן ללא מערך היסטוריה
       if (!existing.quizAttempts && existing.chapterQuiz) {
         existing.quizAttempts = [
           {
@@ -1087,6 +1213,20 @@ export default function App() {
 
   const handleBlockOptionSelect = (blockIdx: number, optIdx: number, correctIdx: number, totalBlocks: number) => {
     setBlockAnswers((prev) => ({ ...prev, [blockIdx]: optIdx }));
+
+    const block = studyContent?.blocks?.[blockIdx];
+    if (optIdx !== correctIdx && block && activeSession) {
+      recordMistakesToCourseBank([
+        {
+          source: 'שיעור מודרך',
+          sessionTopic: activeSession.topic,
+          question: block.checkQuestion,
+          userAnswer: block.options[optIdx],
+          correctAnswer: block.options[correctIdx],
+          rationale: block.feedbackByOption?.[correctIdx],
+        },
+      ]);
+    }
 
     if (optIdx === correctIdx) {
       if (blockIdx + 1 < totalBlocks) {
@@ -1243,7 +1383,6 @@ export default function App() {
     }
   };
 
-  // הגשת בוחן + ניתוח טעויות ושמירה להיסטוריה
   const handleSubmitQuiz = async () => {
     const attempts = [...(studyContent?.quizAttempts || [])];
     const currentAttempt = attempts[activeQuizAttemptIdx];
@@ -1256,6 +1395,8 @@ export default function App() {
       .map((q: any, i: number) => {
         if (quizAnswers[i] !== q.ans) {
           return {
+            source: 'בוחן מסכם',
+            sessionTopic: activeSession.topic,
             question: q.q,
             userAnswer: quizAnswers[i] !== undefined ? q.opts[quizAnswers[i]] : 'לא נענה',
             correctAnswer: q.opts[q.ans],
@@ -1265,6 +1406,10 @@ export default function App() {
         return null;
       })
       .filter(Boolean) as any[];
+
+    if (mistakes.length > 0) {
+      recordMistakesToCourseBank(mistakes);
+    }
 
     setQuizSubmitted(true);
 
@@ -1293,7 +1438,6 @@ export default function App() {
     updateSessionSavedContent(activeSession.id, { quizAttempts: attempts });
   };
 
-  // סיום Code Blue + ניתוח טעויות ושמירה להיסטוריה
   const finishCodeBlueRun = async (
     finalAnswers: Record<number, number>,
     finalStab: number,
@@ -1310,6 +1454,8 @@ export default function App() {
         const chosen = finalAnswers[idx];
         if (chosen !== undefined && chosen !== c.correct) {
           return {
+            source: 'Code Blue',
+            sessionTopic: activeSession.topic,
             question: `${c.scenario} — ${c.question}`,
             userAnswer: c.options[chosen],
             correctAnswer: c.options[c.correct],
@@ -1319,6 +1465,10 @@ export default function App() {
         return null;
       })
       .filter(Boolean) as any[];
+
+    if (mistakes.length > 0) {
+      recordMistakesToCourseBank(mistakes);
+    }
 
     let feedbackText = '';
     if (mistakes.length > 0) {
@@ -1346,7 +1496,35 @@ export default function App() {
     updateSessionSavedContent(activeSession.id, { codeBlueAttempts: attempts });
   };
 
-  // הצ'אט רואה בזמן אמת את כל סעיפי השיעור המודרך
+  // יצירת מרתון תיקון טעויות חוצה-קורס
+  const handleStartMistakesMarathon = async () => {
+    if (!activeCourse || !(activeCourse.mistakesBank?.length > 0)) return;
+    setMarathonSubmitted(false);
+    setMarathonAnswers({});
+
+    if (!apiKey.trim()) {
+      setMarathonQuestions(
+        activeCourse.mistakesBank.slice(0, 5).map((m: any) => ({
+          q: m.question,
+          opts: [m.correctAnswer, m.userAnswer, 'אפשרות נוספת לבדיקה'],
+          ans: 0,
+          explanation: m.rationale || 'חזרה מתוך בנק הטעויות של הקורס.',
+        }))
+      );
+      return;
+    }
+
+    setIsGeneratingMarathon(true);
+    try {
+      const generated = await generateMistakesMarathonQuiz(apiKey.trim(), activeCourse.mistakesBank);
+      setMarathonQuestions(generated);
+    } catch (err: any) {
+      alert('שגיאה בבניית מרתון הטעויות: ' + err.message);
+    } finally {
+      setIsGeneratingMarathon(false);
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -1437,6 +1615,110 @@ ${activeSession.textChunk.slice(0, 22000)}
 
   const currentQuizAttempt = studyContent?.quizAttempts?.[activeQuizAttemptIdx];
   const currentCodeBlueAttempt = studyContent?.codeBlueAttempts?.[activeCodeBlueAttemptIdx];
+  const courseReviewCards = activeCourse?.reviewCardsBank || [];
+  const courseMistakes = activeCourse?.mistakesBank || [];
+
+  // תצוגת סיכום כיס להדפסה (PDF)
+  if (pocketSummaryScope && activeCourse) {
+    const sessionsToPrint =
+      pocketSummaryScope === 'session' && activeSession
+        ? [
+            {
+              ...activeSession,
+              savedContent: studyContent || activeSession.savedContent,
+            },
+          ]
+        : activeCourse.schedule.filter((s: any) => s.savedContent?.blocks);
+
+    return (
+      <div dir="rtl" className="bg-white text-slate-900 min-h-screen p-8 max-w-4xl mx-auto">
+        <div className="flex flex-wrap justify-between items-center gap-4 pb-6 border-b-2 border-slate-900 print:hidden">
+          <div>
+            <h2 className="text-xl font-bold">תצוגת סיכום כיס קליני להדפסה / PDF</h2>
+            <p className="text-xs text-slate-500">לחץ על "הדפס / שמור כ-PDF" ובחר Save as PDF</p>
+          </div>
+          <div className="flex gap-2.5">
+            <button
+              onClick={() => window.print()}
+              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold flex items-center gap-2"
+            >
+              <Printer size={16} /> הדפס / שמור כ-PDF
+            </button>
+            <button
+              onClick={() => setPocketSummaryScope(null)}
+              className="px-4 py-2.5 border border-slate-300 hover:bg-slate-100 rounded-xl text-sm font-semibold"
+            >
+              חזרה ללמידה
+            </button>
+          </div>
+        </div>
+
+        <div className="py-6 space-y-6">
+          <div className="border-b border-slate-300 pb-4">
+            <span className="text-xs font-bold uppercase text-blue-700">MedStudy AI — דף עזר קליני מרוכז</span>
+            <h1 className="text-3xl font-extrabold mt-1">{activeCourse.title}</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              {userName.trim() ? `הופק עבור: ${userName.trim()} • ` : ''}
+              תאריך הפקה: {new Date().toLocaleDateString('he-IL')}
+            </p>
+          </div>
+
+          {sessionsToPrint.length === 0 ? (
+            <p className="text-sm text-slate-600">
+              טרם נפתחו שיעורים בקורס זה. היכנס לפחות לסשן אחד כדי להפיק לו סיכום כיס.
+            </p>
+          ) : (
+            sessionsToPrint.map((sess: any) => (
+              <div key={sess.id} className="space-y-4 pb-6 border-b border-slate-300 break-inside-avoid">
+                <h2 className="text-xl font-bold text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg">
+                  שלב #{sess.id}: {sess.topic}
+                </h2>
+
+                <div className="space-y-3">
+                  {sess.savedContent?.blocks?.map((b: any, idx: number) => (
+                    <div key={idx} className="pr-3 border-r-2 border-blue-600 space-y-1">
+                      <h3 className="font-bold text-sm">
+                        {idx + 1}. {b.title}
+                      </h3>
+                      <p className="text-xs leading-relaxed text-slate-700">{b.explanation}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {sess.savedContent?.comparisonTable?.length > 0 && (
+                  <div className="pt-2">
+                    <h4 className="text-xs font-bold mb-1.5 text-slate-700">טבלת השוואה קלינית:</h4>
+                    <table className="w-full text-xs text-right border border-slate-300 border-collapse">
+                      <thead className="bg-slate-100">
+                        <tr>
+                          <th className="p-2 border border-slate-300">פרמטר</th>
+                          <th className="p-2 border border-slate-300">ממצא א׳</th>
+                          <th className="p-2 border border-slate-300">ממצא ב׳</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sess.savedContent.comparisonTable.map((r: any, rIdx: number) => (
+                          <tr key={rIdx}>
+                            <td className="p-2 border border-slate-300 font-semibold">{r.param}</td>
+                            <td className="p-2 border border-slate-300">{r.acute}</td>
+                            <td className="p-2 border border-slate-300">{r.chronic}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+
+          <div className="text-center text-[11px] text-slate-400 pt-4">
+            © {new Date().getFullYear()} כל הזכויות שמורות למתן פלדמן
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen flex flex-col' : 'bg-slate-50 text-slate-900 min-h-screen flex flex-col'}>
@@ -1531,6 +1813,151 @@ ${activeSession.textChunk.slice(0, 22000)}
         </div>
       )}
 
+      {/* מודאל מרתון תיקון טעויות חוצה-קורס */}
+      {showMistakesModal && activeCourse && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-40 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl">
+            <div className="p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
+              <div className="flex items-center gap-2.5">
+                <div className="bg-rose-500/10 text-rose-500 p-2 rounded-xl">
+                  <AlertTriangle size={20} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg">בנק טעויות ומרתון חיזוק — {activeCourse.title}</h3>
+                  <p className="text-xs text-slate-400">
+                    {courseMistakes.length} שאלות שזוהו כנקודות תורפה לאורך הקורס
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowMistakesModal(false);
+                  setMarathonQuestions(null);
+                }}
+                className="p-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5 flex-1">
+              {!marathonQuestions ? (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3 bg-rose-500/5 border border-rose-500/20 p-4 rounded-xl">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 max-w-md">
+                      המערכת אספה אוטומטית כל שאלה שטעית בה בשיעורים, בבחנים וב-Code Blue. צור מרתון ממוקד כדי לתקן אותן לפני הבחינה!
+                    </p>
+                    <button
+                      onClick={handleStartMistakesMarathon}
+                      disabled={isGeneratingMarathon || courseMistakes.length === 0}
+                      className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm"
+                    >
+                      {isGeneratingMarathon ? <Loader2 size={15} className="animate-spin" /> : <Target size={15} />}
+                      <span>בנה מרתון תיקון טעויות</span>
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {courseMistakes.map((m: any) => (
+                      <div
+                        key={m.id}
+                        className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 space-y-1.5 text-xs"
+                      >
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-blue-500">
+                            {m.source} • {m.sessionTopic}
+                          </span>
+                          <button
+                            onClick={() => removeMistakeFromBank(m.id)}
+                            className="text-emerald-500 hover:underline font-semibold"
+                          >
+                            סמן כתוקן ✓
+                          </button>
+                        </div>
+                        <p className="font-semibold text-sm text-slate-800 dark:text-slate-200">{m.question}</p>
+                        <p className="text-red-500">טעות קודמת: {m.userAnswer}</p>
+                        <p className="text-emerald-500 font-medium">תשובה נכונה: {m.correctAnswer}</p>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-5">
+                  <div className="flex justify-between items-center">
+                    <h4 className="font-bold text-base text-rose-500">
+                      מרתון תיקון טעויות ({marathonQuestions.length} שאלות מותאמות)
+                    </h4>
+                    <button
+                      onClick={() => setMarathonQuestions(null)}
+                      className="text-xs underline text-slate-400"
+                    >
+                      חזרה לרשימת הטעויות
+                    </button>
+                  </div>
+
+                  {marathonQuestions.map((item: any, qIdx: number) => (
+                    <div key={qIdx} className="space-y-2.5 pb-4 border-b border-slate-200 dark:border-slate-800">
+                      <p className="font-semibold text-sm">
+                        {qIdx + 1}. {item.q}
+                      </p>
+                      <div className="space-y-1.5">
+                        {item.opts.map((opt: string, oIdx: number) => {
+                          const chosen = marathonAnswers[qIdx] === oIdx;
+                          const isCorrect = item.ans === oIdx;
+                          let style = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+                          if (marathonSubmitted) {
+                            if (isCorrect) style = 'bg-emerald-500/15 border-emerald-500 text-emerald-500 font-semibold';
+                            else if (chosen) style = 'bg-red-500/15 border-red-500 text-red-500';
+                          } else if (chosen) {
+                            style = 'border-blue-500 bg-blue-500/10 text-blue-500';
+                          }
+                          return (
+                            <button
+                              key={oIdx}
+                              disabled={marathonSubmitted}
+                              onClick={() => setMarathonAnswers({ ...marathonAnswers, [qIdx]: oIdx })}
+                              className={`w-full text-right p-3 rounded-xl border text-xs transition ${style}`}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {marathonSubmitted && (
+                        <p className="text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 p-3 rounded-xl">
+                          <strong>הסבר:</strong> {item.explanation}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+
+                  {!marathonSubmitted ? (
+                    <button
+                      onClick={() => setMarathonSubmitted(true)}
+                      className="w-full py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-sm"
+                    >
+                      בדוק תוצאות מרתון
+                    </button>
+                  ) : (
+                    <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex justify-between items-center text-sm font-bold text-emerald-500">
+                      <span>
+                        ציון במרתון: {marathonQuestions.filter((q: any, i: number) => marathonAnswers[i] === q.ans).length} / {marathonQuestions.length}
+                      </span>
+                      <button
+                        onClick={handleStartMistakesMarathon}
+                        className="text-xs underline flex items-center gap-1"
+                      >
+                        <RotateCcw size={13} /> צור סט מרתון נוסף
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <main className="max-w-6xl mx-auto p-6 flex-1 w-full">
         {step === 0 && (
           <div className="space-y-6 mt-4">
@@ -1541,7 +1968,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
                   <ShieldCheck size={15} className="text-emerald-500" />
-                  אחסון מורחב פעיל (IndexedDB) — 100% מחומרי הלימוד נשמרים ללא קיצוץ
+                  אחסון מורחב פעיל (IndexedDB) — כולל מעקב טעויות וחזרות מרווחות
                 </p>
               </div>
               <button
@@ -1584,6 +2011,20 @@ ${activeSession.textChunk.slice(0, 22000)}
                       <p className="text-xs text-slate-500 dark:text-slate-400">
                         {course.filesCount} קבצים • {totalCount} סשנים של {course.sessionDuration} דק׳
                       </p>
+                      {(course.mistakesBank?.length > 0 || course.reviewCardsBank?.length > 0) && (
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {course.mistakesBank?.length > 0 && (
+                            <span className="text-[11px] px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-500 font-semibold">
+                              {course.mistakesBank.length} טעויות לחיזוק
+                            </span>
+                          )}
+                          {course.reviewCardsBank?.length > 0 && (
+                            <span className="text-[11px] px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-500 font-semibold">
+                              {course.reviewCardsBank.length} כרטיסיות לחזרה
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="space-y-2">
@@ -1879,20 +2320,36 @@ ${activeSession.textChunk.slice(0, 22000)}
                   {activeCourse.schedule.length} משימות למידה • הושלמו {activeCourse.schedule.filter((s: any) => s.completed).length}/{activeCourse.schedule.length}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-2.5">
+              <div className="flex flex-wrap gap-2">
+                {courseMistakes.length > 0 && (
+                  <button
+                    onClick={() => setShowMistakesModal(true)}
+                    className="px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/40 text-rose-500 hover:bg-rose-500/20 text-xs sm:text-sm font-bold flex items-center gap-1.5 transition"
+                  >
+                    <AlertTriangle size={16} />
+                    מרתון טעויות ({courseMistakes.length})
+                  </button>
+                )}
+                <button
+                  onClick={() => setPocketSummaryScope('course')}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition"
+                >
+                  <Printer size={16} />
+                  סיכום כיס לקורס
+                </button>
                 <button
                   onClick={openAddMaterialToCourse}
-                  className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 text-sm font-semibold flex items-center gap-2 transition"
+                  className="px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 text-xs sm:text-sm font-semibold flex items-center gap-1.5 transition"
                 >
                   <FilePlus2 size={16} />
-                  הוסף חומר ועדכן לו"ז
+                  הוסף חומר
                 </button>
                 <button
                   onClick={exportToCalendarTasks}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center gap-2 shadow-sm transition"
+                  className="px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-medium flex items-center gap-1.5 shadow-sm transition"
                 >
                   <Download size={16} />
-                  ייצא ליומן גוגל (.ics)
+                  ייצא ליומן (.ics)
                 </button>
               </div>
             </div>
@@ -1981,6 +2438,65 @@ ${activeSession.textChunk.slice(0, 22000)}
                   })}
                 </div>
 
+                {/* חימום זיכרון — Spaced Repetition מכרטיסיות שסומנו לחזרה */}
+                {showWarmupBanner && courseReviewCards.length > 0 && activeTab === 'learn' && (
+                  <div className="bg-amber-500/10 border-2 border-amber-500/40 p-5 rounded-2xl space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-xs font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                        <RefreshCw size={14} />
+                        חימום זיכרון (Spaced Repetition) — {courseReviewCards.length} כרטיסיות לחזרה מהסשנים הקודמים
+                      </span>
+                      <button
+                        onClick={() => setShowWarmupBanner(false)}
+                        className="text-xs text-slate-400 hover:text-slate-600"
+                      >
+                        סגור חימום
+                      </button>
+                    </div>
+
+                    {(() => {
+                      const safeIdx = warmupCardIdx % courseReviewCards.length;
+                      const currentSRCard = courseReviewCards[safeIdx];
+                      return (
+                        <div className="space-y-2.5">
+                          <div
+                            onClick={() => setWarmupFlipped(!warmupFlipped)}
+                            className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-amber-500/30 cursor-pointer text-center space-y-1"
+                          >
+                            <span className="text-[10px] font-bold text-amber-500 uppercase">
+                              {warmupFlipped ? 'הסבר קליני' : `מתוך: ${currentSRCard.sessionTopic} (לחץ להיפוך)`}
+                            </span>
+                            <p className="text-sm font-semibold">
+                              {warmupFlipped ? currentSRCard.back : currentSRCard.front}
+                            </p>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => {
+                                setWarmupFlipped(false);
+                                setWarmupCardIdx((prev) => prev + 1);
+                              }}
+                              className="flex-1 py-2 rounded-xl border border-amber-500/40 text-amber-600 dark:text-amber-400 text-xs font-semibold"
+                            >
+                              עדיין מתלבט — השאר בחזרות
+                            </button>
+                            <button
+                              onClick={() => {
+                                removeCardFromSpacedRepetition(currentSRCard.front);
+                                setWarmupFlipped(false);
+                              }}
+                              className="flex-1 py-2 rounded-xl bg-emerald-600 text-white text-xs font-semibold"
+                            >
+                              זכרתי מצוין ✓ (הסר מתור החזרות)
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {!isLessonMastered && (
                   <div className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-2">
                     <Lock size={14} className="shrink-0" />
@@ -1992,17 +2508,26 @@ ${activeSession.textChunk.slice(0, 22000)}
 
                 {activeTab === 'learn' && (
                   <div className="space-y-5">
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-                      <span className="text-xs font-semibold text-blue-500">
-                        {activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות
-                      </span>
-                      <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
-                      <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-                        <span>התקדמות בשיעור:</span>
-                        <span className="font-bold text-blue-500">
-                          {Math.min(unlockedBlockIdx + (isLessonMastered ? 1 : 0), studyContent.blocks?.length || 0)} / {studyContent.blocks?.length || 0} שלבים
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex flex-wrap justify-between items-start gap-4">
+                      <div>
+                        <span className="text-xs font-semibold text-blue-500">
+                          {activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות
                         </span>
+                        <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
+                        <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                          <span>התקדמות בשיעור:</span>
+                          <span className="font-bold text-blue-500">
+                            {Math.min(unlockedBlockIdx + (isLessonMastered ? 1 : 0), studyContent.blocks?.length || 0)} / {studyContent.blocks?.length || 0} שלבים
+                          </span>
+                        </div>
                       </div>
+                      <button
+                        onClick={() => setPocketSummaryScope('session')}
+                        className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5 transition"
+                      >
+                        <Printer size={15} />
+                        סיכום כיס להדפסה (PDF)
+                      </button>
                     </div>
 
                     {studyContent.blocks?.map((block: any, bIdx: number) => {
@@ -2175,17 +2700,25 @@ ${activeSession.textChunk.slice(0, 22000)}
                       <div className="flex justify-between items-center gap-3">
                         <button
                           onClick={() => {
+                            const currentCard = studyContent.flashcards[cardIndex];
+                            if (currentCard) {
+                              addCardToSpacedRepetition(currentCard, activeSession.topic);
+                            }
                             setIsFlipped(false);
                             setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
                           }}
                           className="flex-1 py-3 rounded-xl border border-amber-500/40 text-amber-500 font-semibold text-sm hover:bg-amber-500/10 transition"
                         >
-                          צריך לחזור שוב
+                          צריך לחזור שוב (יוצג בסשן הבא)
                         </button>
                         <button
                           onClick={() => {
-                            const currentId = studyContent.flashcards[cardIndex]?.id || cardIndex;
+                            const currentCard = studyContent.flashcards[cardIndex];
+                            const currentId = currentCard?.id || cardIndex;
                             if (!knownCards.includes(currentId)) setKnownCards([...knownCards, currentId]);
+                            if (currentCard) {
+                              removeCardFromSpacedRepetition(currentCard.front);
+                            }
                             setIsFlipped(false);
                             setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
                           }}
