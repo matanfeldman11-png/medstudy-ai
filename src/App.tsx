@@ -113,7 +113,7 @@ function shuffleQuestionOptions<T extends { options?: string[]; opts?: string[];
 }
 
 // ==========================================
-// 3. חילוץ טקסט וחלוקה לפי נושאים אמיתיים (ללא חיתוך אמצע נושא)
+// 3. חילוץ טקסט וחלוקה לפי נושאים אמיתיים
 // ==========================================
 async function extractTextFromFile(file: File): Promise<string> {
   const ext = file.name.split('.').pop()?.toLowerCase();
@@ -174,7 +174,6 @@ function extractNaturalTopicUnits(files: any[]): TopicUnit[] {
   let unitCounter = 0;
 
   files.forEach((f) => {
-    // פירוק לפי שקופיות, עמודים או פסקאות משמעותיות
     const rawSegments = f.text
       .split(/(?=\[שקופית \d+\])|(?=\[עמוד \d+\])|\n{2,}/)
       .map((s: string) => s.trim())
@@ -191,7 +190,6 @@ function extractNaturalTopicUnits(files: any[]): TopicUnit[] {
       return;
     }
 
-    // איחוד שקופיות/עמודים קצרים ליחידות נושאיות שלמות (כ-1,800-3,500 תווים ליחידה)
     let buffer: string[] = [];
     let bufferLen = 0;
 
@@ -509,7 +507,6 @@ ${JSON.stringify(catalog)}`;
     };
   });
 
-  // השלמת יחידות אם נשארו כאלה שלא שובצו
   const missingUnits = units.filter((u) => !usedUnitIds.has(u.id));
   if (missingUnits.length > 0 && builtSessions.length > 0) {
     const lastTarget = builtSessions[builtSessions.length - 1];
@@ -518,7 +515,6 @@ ${JSON.stringify(catalog)}`;
     lastTarget.charCount = lastTarget.textChunk.length;
   }
 
-  // מילוי אם יש פחות סשנים מ-targetSessionCount
   while (builtSessions.length < targetSessionCount) {
     const prev = builtSessions[builtSessions.length - 1];
     builtSessions.push({
@@ -796,6 +792,14 @@ export default function App() {
 
   const [isLoadingTabContent, setIsLoadingTabContent] = useState(false);
 
+  // סטטוס טעינה מוקדמת ברקע של כרטיסיות, בוחן ו-Code Blue
+  const [bgPrefetchStatus, setBgPrefetchStatus] = useState<{
+    flashcards: 'idle' | 'loading' | 'ready';
+    quiz: 'idle' | 'loading' | 'ready';
+    game: 'idle' | 'loading' | 'ready';
+  }>({ flashcards: 'idle', quiz: 'idle', game: 'idle' });
+  const bgPrefetchRunIdRef = useRef<number>(0);
+
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -949,7 +953,6 @@ export default function App() {
           audio.play().catch(reject);
         });
       } catch {
-        // Fallback ל-SpeechSynthesis במקרה של חסימת רשת
         if ('speechSynthesis' in window && !speechAbortRef.current) {
           await new Promise<void>((resolve) => {
             const utter = new SpeechSynthesisUtterance(chunk);
@@ -1334,7 +1337,7 @@ export default function App() {
 
   const updateSessionSavedContent = (sessionId: number, patch: any) => {
     setStudyContent((prev: any) => {
-      const merged = { ...prev, ...patch };
+      const merged = { ...(prev || {}), ...patch };
       if (activeCourse) {
         setCourses((cList) =>
           cList.map((c) =>
@@ -1377,6 +1380,146 @@ export default function App() {
     }
   };
 
+  // ==========================================
+  // טעינה מקדימה ברקע של כרטיסיות, בוחן ו-Code Blue
+  // ==========================================
+  const prefetchSessionExtrasInBackground = async (session: any, currentContent: any) => {
+    const runId = ++bgPrefetchRunIdRef.current;
+    const key = apiKey.trim();
+
+    const needCards = !currentContent?.flashcards || currentContent.flashcards.length === 0;
+    const needQuiz = !currentContent?.quizAttempts || currentContent.quizAttempts.length === 0;
+    const needGame = !currentContent?.codeBlueAttempts || currentContent.codeBlueAttempts.length === 0;
+
+    setBgPrefetchStatus({
+      flashcards: needCards ? 'loading' : 'ready',
+      quiz: needQuiz ? 'loading' : 'ready',
+      game: needGame ? 'loading' : 'ready',
+    });
+
+    if (!needCards && !needQuiz && !needGame) return;
+
+    if (!key) {
+      // מצב הדגמה ללא API Key
+      const demoPatch: any = {};
+      if (needCards) {
+        demoPatch.flashcards = [{ id: 1, front: 'מצב הדגמה', back: 'חבר מפתח API בהגדרות כדי לייצר כרטיסיות מתוך החומר.' }];
+      }
+      if (needQuiz) {
+        demoPatch.quizAttempts = [
+          {
+            id: 'quiz-' + Date.now(),
+            createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+            questions: [{ q: 'שאלת הדגמה', opts: ['תשובה נכונה', 'מסיח'], ans: 0, explanation: 'הסבר' }],
+            answers: {},
+            submitted: false,
+            score: null,
+            weaknessFeedback: '',
+          },
+        ];
+      }
+      if (needGame) {
+        demoPatch.codeBlueAttempts = [
+          {
+            id: 'cb-' + Date.now(),
+            createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+            cases: [{ scenario: 'תרחיש הדגמה', question: 'מה עושים?', options: ['פעולה נכונה', 'טעות'], correct: 0, rationale: 'הסבר' }],
+            answers: {},
+            completed: false,
+            finalStability: 100,
+            finalStreak: 0,
+            weaknessFeedback: '',
+          },
+        ];
+      }
+      updateSessionSavedContent(session.id, demoPatch);
+      setBgPrefetchStatus({ flashcards: 'ready', quiz: 'ready', game: 'ready' });
+      return;
+    }
+
+    // הרצה מקבילית ברקע ללא חסימת המשתמש
+    const tasks: Promise<void>[] = [];
+
+    if (needCards) {
+      tasks.push(
+        generateFlashcardsOnly(key, session.textChunk, session.duration)
+          .then((cards) => {
+            if (bgPrefetchRunIdRef.current !== runId) return;
+            updateSessionSavedContent(session.id, { flashcards: cards });
+            setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'ready' }));
+          })
+          .catch((e) => {
+            console.warn('שגיאת טעינה מקדימה של כרטיסיות:', e);
+            if (bgPrefetchRunIdRef.current === runId) {
+              setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'idle' }));
+            }
+          })
+      );
+    }
+
+    if (needQuiz) {
+      tasks.push(
+        generateQuizOnly(key, session.textChunk, session.duration)
+          .then((quiz) => {
+            if (bgPrefetchRunIdRef.current !== runId) return;
+            const newAttempt = {
+              id: 'quiz-' + Date.now(),
+              createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+              questions: quiz,
+              answers: {},
+              submitted: false,
+              score: null,
+              weaknessFeedback: '',
+            };
+            updateSessionSavedContent(session.id, { quizAttempts: [newAttempt] });
+            setActiveQuizAttemptIdx(0);
+            setQuizAnswers({});
+            setQuizSubmitted(false);
+            setQuizWeaknessFeedback('');
+            setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'ready' }));
+          })
+          .catch((e) => {
+            console.warn('שגיאת טעינה מקדימה של בוחן:', e);
+            if (bgPrefetchRunIdRef.current === runId) {
+              setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'idle' }));
+            }
+          })
+      );
+    }
+
+    if (needGame) {
+      tasks.push(
+        generateCodeBlueOnly(key, session.textChunk)
+          .then((cases) => {
+            if (bgPrefetchRunIdRef.current !== runId) return;
+            const newAttempt = {
+              id: 'cb-' + Date.now(),
+              createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+              cases,
+              answers: {},
+              completed: false,
+              finalStability: 100,
+              finalStreak: 0,
+              weaknessFeedback: '',
+            };
+            updateSessionSavedContent(session.id, { codeBlueAttempts: [newAttempt] });
+            setActiveCodeBlueAttemptIdx(0);
+            setCodeBlueAnswers({});
+            setCodeBlueWeaknessFeedback('');
+            setBgPrefetchStatus((prev) => ({ ...prev, game: 'ready' }));
+          })
+          .catch((e) => {
+            console.warn('שגיאת טעינה מקדימה של Code Blue:', e);
+            if (bgPrefetchRunIdRef.current === runId) {
+              setBgPrefetchStatus((prev) => ({ ...prev, game: 'idle' }));
+            }
+          })
+      );
+    }
+
+    await Promise.allSettled(tasks);
+  };
+
   const startSession = async (session: any) => {
     stopSpeech();
     setActiveSession(session);
@@ -1404,7 +1547,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). אני רואה בזמן אמת באיזה טאב ושלב את/ה נמצא/ת (שיעור, כרטיסיות, בוחן או Code Blue) ואענה בהתאם למסך הפעיל.`,
+        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). בזמן שאת/ה לומד/ת את השיעור המודרך, אני כבר מכין ברקע את הכרטיסיות, הבוחן וסימולציית Code Blue כדי שיהיו מוכנים מיד כשתסיים/י!`,
       },
     ]);
 
@@ -1445,6 +1588,9 @@ export default function App() {
       if (existing.codeBlueAttempts?.length > 0) {
         loadCodeBlueAttemptState(existing.codeBlueAttempts[0], 0);
       }
+
+      // משלים ברקע אם חסר אחד הרכיבים
+      prefetchSessionExtrasInBackground(session, existing);
       return;
     }
 
@@ -1459,14 +1605,20 @@ export default function App() {
         );
         setStudyContent(lessonData);
         updateSessionSavedContent(session.id, lessonData);
-      } catch (err: any) {
-        alert('שגיאה בבניית השיעור: ' + err.message);
-        setStudyContent(getFallbackLesson(session.topic, session.duration));
-      } finally {
         setIsLoadingAI(false);
+
+        // מיד כשהשיעור המודרך עלה — מתחיל לייצר ברקע כרטיסיות, בוחן ו-Code Blue
+        prefetchSessionExtrasInBackground(session, lessonData);
+      } catch (err: any) {
+        setIsLoadingAI(false);
+        alert('שגיאה בבניית השיעור: ' + err.message);
+        const fb = getFallbackLesson(session.topic, session.duration);
+        setStudyContent(fb);
       }
     } else {
-      setStudyContent(getFallbackLesson(session.topic, session.duration));
+      const fb = getFallbackLesson(session.topic, session.duration);
+      setStudyContent(fb);
+      prefetchSessionExtrasInBackground(session, fb);
     }
   };
 
@@ -1543,6 +1695,7 @@ export default function App() {
       const nextAttempts = [newAttempt, ...existingAttempts];
       updateSessionSavedContent(activeSession.id, { quizAttempts: nextAttempts });
       loadQuizAttemptState(newAttempt, 0);
+      setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'ready' }));
     } catch (err: any) {
       alert('שגיאה ביצירת הבוחן: ' + err.message);
     } finally {
@@ -1585,6 +1738,7 @@ export default function App() {
       const nextAttempts = [newAttempt, ...existingAttempts];
       updateSessionSavedContent(activeSession.id, { codeBlueAttempts: nextAttempts });
       loadCodeBlueAttemptState(newAttempt, 0);
+      setBgPrefetchStatus((prev) => ({ ...prev, game: 'ready' }));
     } catch (err: any) {
       alert('שגיאה ביצירת סימולציית Code Blue: ' + err.message);
     } finally {
@@ -1600,7 +1754,7 @@ export default function App() {
     stopSpeech();
     setActiveTab(targetTab);
 
-    if (targetTab === 'flashcards' && !studyContent?.flashcards) {
+    if (targetTab === 'flashcards' && !studyContent?.flashcards && bgPrefetchStatus.flashcards !== 'loading') {
       if (!apiKey.trim()) {
         updateSessionSavedContent(activeSession.id, {
           flashcards: [{ id: 1, front: 'מצב הדגמה', back: 'חבר מפתח API ליצירת כרטיסיות.' }],
@@ -1611,6 +1765,7 @@ export default function App() {
       try {
         const cards = await generateFlashcardsOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
         updateSessionSavedContent(activeSession.id, { flashcards: cards });
+        setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'ready' }));
       } catch (err: any) {
         alert('שגיאה ביצירת כרטיסיות: ' + err.message);
       } finally {
@@ -1618,11 +1773,19 @@ export default function App() {
       }
     }
 
-    if (targetTab === 'quiz' && (!studyContent?.quizAttempts || studyContent.quizAttempts.length === 0)) {
+    if (
+      targetTab === 'quiz' &&
+      (!studyContent?.quizAttempts || studyContent.quizAttempts.length === 0) &&
+      bgPrefetchStatus.quiz !== 'loading'
+    ) {
       await createAndAppendQuizAttempt();
     }
 
-    if (targetTab === 'game' && (!studyContent?.codeBlueAttempts || studyContent.codeBlueAttempts.length === 0)) {
+    if (
+      targetTab === 'game' &&
+      (!studyContent?.codeBlueAttempts || studyContent.codeBlueAttempts.length === 0) &&
+      bgPrefetchStatus.game !== 'loading'
+    ) {
       await createAndAppendCodeBlueAttempt();
     }
   };
@@ -1786,7 +1949,6 @@ export default function App() {
     }
   };
 
-  // בניית הקשר מדויק של המסך הנוכחי עבור הצ'אט הצדדי
   const buildActiveScreenContext = () => {
     if (activeTab === 'game') {
       const cbAttempt = studyContent?.codeBlueAttempts?.[activeCodeBlueAttemptIdx];
@@ -1800,7 +1962,7 @@ export default function App() {
 - אפשרויות ההתערבות המוצגות על המסך: ${currentCase.options.map((o: string, i: number) => `${i + 1}) ${o}`).join(' | ')}
 - ההתערבות הנכונה לפי הפרוטוקול: ${currentCase.options[currentCase.correct]} (נימוק: ${currentCase.rationale})
 - מצב יציבות המטופל כעת: ${patientStability}%, זמן שנותר: ${timeLeft} שניות.
-הנחיה קריטית: הסטודנט/ית מסתכל/ת על תרחיש זה של Code Blue. ענה לשאלה שלו/ה בהתייחס לתרחיש Code Blue הזה! (אם המשחק עדיין רץ והסטודנט שואל רמז, תן הכוונה קלינית בלי להסגיר ישר את מספר התשובה אלא אם ביקש הסבר מפורש).`;
+הנחיה קריטית: הסטודנט/ית מסתכל/ת על תרחיש זה של Code Blue. ענה לשאלה שלו/ה בהתייחס לתרחיש Code Blue הזה!`;
       }
       if (gameOver && cbAttempt.cases) {
         const summary = cbAttempt.cases
@@ -1832,7 +1994,7 @@ ${summary}
       return `הסטודנט/ית נמצא/ת כעת בטאב "בוחן מסכם" (סטטוס: ${quizSubmitted ? 'הבוחן הוגש ונבדק' : 'באמצע פתרון הבוחן'}).
 אלו השאלות המוצגות כעת על המסך של הסטודנט/ית:
 ${questionsList}
-הנחיה: אם הסטודנט/ית שואל/ת על שאלה מהבוחן, התייחס ישירות לשאלות הבוחן שלמעלה (ולא לסעיפי השיעור המודרך, אלא אם ביקש במפורש).`;
+הנחיה: אם הסטודנט/ית שואל/ת על שאלה מהבוחן, התייחס ישירות לשאלות הבוחן שלמעלה.`;
     }
 
     if (activeTab === 'flashcards') {
@@ -1845,7 +2007,6 @@ ${questionsList}
 הנחיה: ענה לשאלות הסטודנט/ית בהתייחס לכרטיסייה המוצגת כעת על המסך.`;
     }
 
-    // ברירת מחדל: טאב "שיעור מודרך"
     const blocksContext = (studyContent?.blocks || [])
       .map(
         (b: any, idx: number) =>
@@ -2994,10 +3155,10 @@ ${activeSession.textChunk.slice(0, 18000)}
               <div className="lg:col-span-7 space-y-5">
                 <div className="grid grid-cols-4 gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                   {[
-                    { id: 'learn' as const, label: 'שיעור מודרך', icon: BookOpen, locked: false },
-                    { id: 'flashcards' as const, label: 'כרטיסיות', icon: Layers, locked: !isLessonMastered },
-                    { id: 'quiz' as const, label: 'בוחן מסכם', icon: Award, locked: !isLessonMastered },
-                    { id: 'game' as const, label: 'Code Blue', icon: Activity, locked: !isLessonMastered },
+                    { id: 'learn' as const, label: 'שיעור מודרך', icon: BookOpen, locked: false, status: 'ready' as const },
+                    { id: 'flashcards' as const, label: 'כרטיסיות', icon: Layers, locked: !isLessonMastered, status: bgPrefetchStatus.flashcards },
+                    { id: 'quiz' as const, label: 'בוחן מסכם', icon: Award, locked: !isLessonMastered, status: bgPrefetchStatus.quiz },
+                    { id: 'game' as const, label: 'Code Blue', icon: Activity, locked: !isLessonMastered, status: bgPrefetchStatus.game },
                   ].map((tab) => {
                     const Icon = tab.icon;
                     const active = activeTab === tab.id;
@@ -3007,16 +3168,29 @@ ${activeSession.textChunk.slice(0, 18000)}
                         disabled={tab.locked}
                         onClick={() => handleTabSwitch(tab.id)}
                         title={tab.locked ? 'השלם את כל שלבי השיעור כדי לפתוח טאב זה' : ''}
-                        className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 transition ${
+                        className={`py-2 px-2.5 rounded-xl text-xs sm:text-sm font-semibold flex flex-col items-center justify-center gap-0.5 transition ${
                           tab.locked
-                            ? 'opacity-45 cursor-not-allowed text-slate-400'
+                            ? 'opacity-50 cursor-not-allowed text-slate-400'
                             : active
                             ? tab.id === 'game' ? 'bg-rose-600 text-white shadow-sm' : 'bg-blue-600 text-white shadow-sm'
                             : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                       >
-                        {tab.locked ? <Lock size={14} /> : <Icon size={16} />}
-                        <span>{tab.label}</span>
+                        <div className="flex items-center gap-1.5">
+                          {tab.locked ? <Lock size={13} /> : <Icon size={15} />}
+                          <span>{tab.label}</span>
+                        </div>
+                        {tab.id !== 'learn' && (
+                          <span className={`text-[10px] font-normal flex items-center gap-1 ${active ? 'text-white/85' : 'text-slate-400'}`}>
+                            {tab.status === 'loading' ? (
+                              <>
+                                <Loader2 size={10} className="animate-spin" /> מכין ברקע...
+                              </>
+                            ) : tab.status === 'ready' ? (
+                              <span className={active ? 'text-white' : 'text-emerald-500'}>מוכן ✓</span>
+                            ) : null}
+                          </span>
+                        )}
                       </button>
                     );
                   })}
@@ -3084,7 +3258,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   <div className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-2">
                     <Lock size={14} className="shrink-0" />
                     <span>
-                      <strong>למידה מבוקרת (Mastery Gate):</strong> טאבי הכרטיסיות, הבוחן ו-Code Blue ייפתחו אוטומטית מיד כשתשלים את כל {studyContent.blocks?.length} שלבי השיעור למטה.
+                      <strong>למידה מבוקרת (Mastery Gate):</strong> טאבי הכרטיסיות, הבוחן ו-Code Blue נטענים כעת ברקע וייפתחו מיד כשתשלים את כל {studyContent.blocks?.length} שלבי השיעור למטה.
                     </span>
                   </div>
                 )}
@@ -3284,7 +3458,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   isLoadingTabContent || !studyContent.flashcards ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-blue-500 animate-spin" />
-                      <p className="text-sm font-semibold">מייצר כרטיסיות שינון ממוקדות...</p>
+                      <p className="text-sm font-semibold">מסיים להכין כרטיסיות שינון ממוקדות...</p>
                     </div>
                   ) : (
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
@@ -3355,7 +3529,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   isLoadingTabContent || !currentQuizAttempt ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-blue-500 animate-spin" />
-                      <p className="text-sm font-semibold">בונה שאלות בחינה קליניות ומערבב אפשרויות...</p>
+                      <p className="text-sm font-semibold">מסיים לבנות שאלות בחינה קליניות...</p>
                     </div>
                   ) : (
                     <div className="space-y-5">
@@ -3512,7 +3686,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   isLoadingTabContent || !currentCodeBlueAttempt ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-rose-500 animate-spin" />
-                      <p className="text-sm font-semibold">מכין תרחישי חירום קליניים...</p>
+                      <p className="text-sm font-semibold">מסיים להכין תרחישי חירום קליניים...</p>
                     </div>
                   ) : (
                     <div className="space-y-5">
