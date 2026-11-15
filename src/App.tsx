@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Upload, Calendar, Clock, BookOpen, Moon, Sun, 
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
@@ -24,7 +24,7 @@ const DAYS_OF_WEEK = [
 ];
 
 // ==========================================
-// 1. מנוע אחסון IndexedDB (ללא מגבלת 5MB)
+// 1. מנוע אחסון IndexedDB
 // ==========================================
 const DB_NAME = 'MedStudyNursingDB';
 const DB_VERSION = 1;
@@ -113,7 +113,7 @@ function shuffleQuestionOptions<T extends { options?: string[]; opts?: string[];
 }
 
 // ==========================================
-// 3. חילוץ טקסט וחלוקה סמנטית ללא חפיפות או איבוד חומר
+// 3. חילוץ טקסט וחלוקה לפי נושאים אמיתיים (ללא חיתוך אמצע נושא)
 // ==========================================
 async function extractTextFromFile(file: File): Promise<string> {
   const ext = file.name.split('.').pop()?.toLowerCase();
@@ -161,82 +161,157 @@ async function extractTextFromFile(file: File): Promise<string> {
   return '';
 }
 
-function splitFilesIntoDeterministicChunks(files: any[], targetSessionCount: number) {
-  const annotatedBlocks: { fileName: string; text: string }[] = [];
+interface TopicUnit {
+  id: number;
+  fileName: string;
+  detectedHeading: string;
+  text: string;
+  charCount: number;
+}
+
+function extractNaturalTopicUnits(files: any[]): TopicUnit[] {
+  const units: TopicUnit[] = [];
+  let unitCounter = 0;
 
   files.forEach((f) => {
-    const paragraphs = f.text
-      .split(/\n{2,}|(?=\[שקופית \d+\])|(?=\[עמוד \d+\])/)
-      .map((p: string) => p.trim())
-      .filter((p: string) => p.length > 0);
+    // פירוק לפי שקופיות, עמודים או פסקאות משמעותיות
+    const rawSegments = f.text
+      .split(/(?=\[שקופית \d+\])|(?=\[עמוד \d+\])|\n{2,}/)
+      .map((s: string) => s.trim())
+      .filter((s: string) => s.length > 25);
 
-    paragraphs.forEach((p: string) => {
-      annotatedBlocks.push({ fileName: f.name, text: p });
+    if (rawSegments.length === 0) {
+      units.push({
+        id: unitCounter++,
+        fileName: f.name,
+        detectedHeading: f.name.replace(/\.[^/.]+$/, ''),
+        text: f.text || 'אין טקסט בקובץ',
+        charCount: (f.text || '').length,
+      });
+      return;
+    }
+
+    // איחוד שקופיות/עמודים קצרים ליחידות נושאיות שלמות (כ-1,800-3,500 תווים ליחידה)
+    let buffer: string[] = [];
+    let bufferLen = 0;
+
+    rawSegments.forEach((seg: string, idx: number) => {
+      const cleanFirstLine = seg
+        .replace(/^\[(שקופית|עמוד) \d+\]\s*/g, '')
+        .split('\n')[0]
+        .slice(0, 75)
+        .trim();
+
+      const looksLikeNewTopic =
+        bufferLen > 1800 &&
+        (cleanFirstLine.length > 4 && cleanFirstLine.length < 65 && !cleanFirstLine.endsWith('.'));
+
+      if (looksLikeNewTopic || bufferLen > 3800) {
+        const combined = buffer.join('\n\n');
+        const heading =
+          combined
+            .replace(/^\[(שקופית|עמוד) \d+\]\s*/g, '')
+            .split('\n')[0]
+            .slice(0, 70)
+            .trim() || `${f.name} - חלק ${units.length + 1}`;
+
+        units.push({
+          id: unitCounter++,
+          fileName: f.name,
+          detectedHeading: heading,
+          text: combined,
+          charCount: combined.length,
+        });
+        buffer = [seg];
+        bufferLen = seg.length;
+      } else {
+        buffer.push(seg);
+        bufferLen += seg.length;
+      }
+
+      if (idx === rawSegments.length - 1 && buffer.length > 0) {
+        const combined = buffer.join('\n\n');
+        const heading =
+          combined
+            .replace(/^\[(שקופית|עמוד) \d+\]\s*/g, '')
+            .split('\n')[0]
+            .slice(0, 70)
+            .trim() || `${f.name} - חלק ${units.length + 1}`;
+
+        units.push({
+          id: unitCounter++,
+          fileName: f.name,
+          detectedHeading: heading,
+          text: combined,
+          charCount: combined.length,
+        });
+      }
     });
   });
 
-  const totalChars = annotatedBlocks.reduce((acc, b) => acc + b.text.length, 0);
-  if (totalChars === 0) {
-    return Array.from({ length: targetSessionCount }, (_, i) => ({
-      sessionIndex: i,
-      fileName: files[0]?.name || 'חומר לימוד',
-      textChunk: 'אין טקסט זמין בקובץ.',
-      charCount: 0,
+  return units;
+}
+
+function fallbackBalancedMerge(units: TopicUnit[], targetSessionCount: number) {
+  if (units.length <= targetSessionCount) {
+    const res = units.map((u, idx) => ({
+      sessionIndex: idx,
+      title: u.detectedHeading,
+      fileName: u.fileName,
+      rationale: 'יחידת לימוד ממוקדת מתוך הקובץ',
+      textChunk: u.text,
+      charCount: u.charCount,
     }));
+    while (res.length < targetSessionCount) {
+      const last = res[res.length - 1];
+      res.push({
+        ...last,
+        sessionIndex: res.length,
+        title: `${last.title} — חזרה והעמקה קלינית`,
+        rationale: 'סשן ייעודי לחזרה ואינטגרציה של החומר',
+      });
+    }
+    return res;
   }
 
-  const targetCharsPerSession = Math.ceil(totalChars / targetSessionCount);
-  const chunks: { sessionIndex: number; fileName: string; textChunk: string; charCount: number }[] = [];
-
-  let currentBlocks: { fileName: string; text: string }[] = [];
+  const totalChars = units.reduce((acc, u) => acc + u.charCount, 0);
+  const targetPerSession = Math.ceil(totalChars / targetSessionCount);
+  const result: any[] = [];
+  let currentUnits: TopicUnit[] = [];
   let currentLen = 0;
 
-  for (let i = 0; i < annotatedBlocks.length; i++) {
-    const block = annotatedBlocks[i];
-    currentBlocks.push(block);
-    currentLen += block.text.length;
+  units.forEach((u, idx) => {
+    currentUnits.push(u);
+    currentLen += u.charCount;
+    const remainingSessions = targetSessionCount - result.length - 1;
+    const remainingUnits = units.length - idx - 1;
 
-    const remainingSessions = targetSessionCount - chunks.length - 1;
-    const remainingBlocks = annotatedBlocks.length - i - 1;
-
-    if (
-      remainingSessions > 0 &&
-      currentLen >= targetCharsPerSession &&
-      remainingBlocks >= remainingSessions
-    ) {
-      const uniqueFiles = [...new Set(currentBlocks.map((b) => b.fileName))];
-      chunks.push({
-        sessionIndex: chunks.length,
-        fileName: uniqueFiles.join(' + '),
-        textChunk: currentBlocks.map((b) => b.text).join('\n\n'),
+    if (remainingSessions > 0 && currentLen >= targetPerSession && remainingUnits >= remainingSessions) {
+      result.push({
+        sessionIndex: result.length,
+        title: currentUnits[0].detectedHeading,
+        fileName: [...new Set(currentUnits.map((x) => x.fileName))].join(' + '),
+        rationale: `כולל ${currentUnits.length} יחידות נושאיות ברצף`,
+        textChunk: currentUnits.map((x) => x.text).join('\n\n'),
         charCount: currentLen,
       });
-      currentBlocks = [];
+      currentUnits = [];
       currentLen = 0;
     }
-  }
+  });
 
-  if (currentBlocks.length > 0) {
-    const uniqueFiles = [...new Set(currentBlocks.map((b) => b.fileName))];
-    chunks.push({
-      sessionIndex: chunks.length,
-      fileName: uniqueFiles.join(' + '),
-      textChunk: currentBlocks.map((b) => b.text).join('\n\n'),
+  if (currentUnits.length > 0) {
+    result.push({
+      sessionIndex: result.length,
+      title: currentUnits[0].detectedHeading,
+      fileName: [...new Set(currentUnits.map((x) => x.fileName))].join(' + '),
+      rationale: `כולל ${currentUnits.length} יחידות נושאיות ברצף`,
+      textChunk: currentUnits.map((x) => x.text).join('\n\n'),
       charCount: currentLen,
     });
   }
 
-  while (chunks.length < targetSessionCount) {
-    const last = chunks[chunks.length - 1];
-    chunks.push({
-      sessionIndex: chunks.length,
-      fileName: last.fileName,
-      textChunk: last.textChunk,
-      charCount: last.charCount,
-    });
-  }
-
-  return chunks;
+  return result;
 }
 
 function getDurationConfig(minutes: number) {
@@ -277,7 +352,7 @@ function getDurationConfig(minutes: number) {
 }
 
 // ==========================================
-// 4. תקשורת AI עם Retry אוטומטי והגנת JSON
+// 4. תקשורת AI וסידור פדגוגי חכם
 // ==========================================
 async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = true): Promise<any> {
   const useServerProxy = import.meta.env.VITE_USE_PROXY === 'true' && !apiKey;
@@ -327,7 +402,7 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = t
       try {
         const generationConfig: any = {
           maxOutputTokens: 8192,
-          temperature: attempt === 1 ? 0.4 : 0.2,
+          temperature: attempt === 1 ? 0.35 : 0.15,
         };
         if (isJson) generationConfig.responseMimeType = 'application/json';
 
@@ -370,27 +445,96 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = t
   throw new Error(`לא התקבלה תשובה תקינה מהמודל. שגיאה: ${lastError?.message || 'שגיאה לא ידועה'}`);
 }
 
-async function enrichChunksWithAITitles(apiKey: string, chunks: any[], sessionDuration: number) {
-  const previews = chunks.map((c, idx) => ({
-    index: idx,
-    fileName: c.fileName,
-    charCount: c.charCount,
-    startPreview: c.textChunk.slice(0, 700),
-    midPreview: c.textChunk.slice(Math.floor(c.textChunk.length / 2), Math.floor(c.textChunk.length / 2) + 500),
+async function organizeUnitsPedagogicallyWithAI(
+  apiKey: string,
+  units: TopicUnit[],
+  targetSessionCount: number,
+  sessionDuration: number
+) {
+  const catalog = units.map((u) => ({
+    unitId: u.id,
+    fileName: u.fileName,
+    heading: u.detectedHeading,
+    preview: u.text.slice(0, 350).replace(/\s+/g, ' '),
   }));
 
-  const prompt = `אתה מרצה בכיר לסיעוד. לפניך ${chunks.length} יחידות לימוד רציפות (ללא חפיפה) עבור סשנים של ${sessionDuration} דקות.
-לכל יחידה, תן כותרת קלינית מדויקת בעברית ונימוק פדגוגי קצר (משפט אחד) על סמך התוכן האמיתי שלה.
+  const prompt = `אתה ראש חוג לסיעוד ומתכנן תוכניות לימודים.
+לפניך רשימה של ${units.length} יחידות תוכן שחולצו מקבצי הקורס, ויש לך בדיוק ${targetSessionCount} סשנים (ימי למידה) של ${sessionDuration} דקות עד לבחינה.
+
+המשימה שלך:
+1. קבץ וסדר את כל יחידות התוכן (unitId) לתוך בדיוק ${targetSessionCount} סשנים בסדר למידה פדגוגי והגיוני בסיעוד:
+   - קודם מושגי יסוד, אנטומיה ופיזיולוגיה תקינה
+   - אחר כך פתופיזיולוגיה ומנגנוני מחלה
+   - לאחר מכן אבחון, פרמקולוגיה, התערבות סיעודית וניהול סיבוכים
+2. חובה לכלול את כל ה-unitId (מ-0 עד ${units.length - 1}) ללא דילוגים וללא כפילויות (אם יש יותר סשנים מיחידות, הקצה סשן אחרון לחזרה מסכמת).
+3. תן לכל סשן כותרת קלינית ברורה בעברית ונימוק קצר מדוע הוא ממוקם בשלב זה.
+
 החזר JSON תקין בלבד:
 {
-  "pedagogicalStrategy": "סקירה קצרה של רצף הלמידה",
-  "titles": [
-    { "index": 0, "title": "כותרת קלינית מדויקת", "rationale": "נימוק קצר" }
+  "pedagogicalStrategy": "הסבר קצר על ההיגיון הפדגוגי של סדר הלימוד",
+  "sessions": [
+    {
+      "sessionIndex": 0,
+      "title": "כותרת קלינית ברורה לסשן",
+      "rationale": "נימוק קצר למיקום בסדר הלימוד",
+      "unitIds": [0, 1]
+    }
   ]
 }
-יחידות: ${JSON.stringify(previews)}`;
 
-  return await callGeminiWithFallback(apiKey, prompt, true);
+רשימת היחידות:
+${JSON.stringify(catalog)}`;
+
+  const aiPlan = await callGeminiWithFallback(apiKey, prompt, true);
+  if (!Array.isArray(aiPlan?.sessions) || aiPlan.sessions.length === 0) {
+    throw new Error('המודל לא החזיר מבנה סשנים תקין');
+  }
+
+  const usedUnitIds = new Set<number>();
+  const builtSessions = aiPlan.sessions.slice(0, targetSessionCount).map((s: any, idx: number) => {
+    const validIds = (s.unitIds || []).filter((id: number) => typeof id === 'number' && units[id] && !usedUnitIds.has(id));
+    validIds.forEach((id: number) => usedUnitIds.add(id));
+
+    const matchedUnits = validIds.map((id: number) => units[id]);
+    const combinedText = matchedUnits.map((u: TopicUnit) => u.text).join('\n\n');
+    const fileNames = [...new Set(matchedUnits.map((u: TopicUnit) => u.fileName))].join(' + ');
+
+    return {
+      sessionIndex: idx,
+      title: s.title || matchedUnits[0]?.detectedHeading || `יחידת לימוד ${idx + 1}`,
+      fileName: fileNames || units[0]?.fileName || 'חומר לימוד',
+      rationale: s.rationale || 'סדר למידה קליני מדורג',
+      textChunk: combinedText,
+      charCount: combinedText.length,
+    };
+  });
+
+  // השלמת יחידות אם נשארו כאלה שלא שובצו
+  const missingUnits = units.filter((u) => !usedUnitIds.has(u.id));
+  if (missingUnits.length > 0 && builtSessions.length > 0) {
+    const lastTarget = builtSessions[builtSessions.length - 1];
+    const extraText = missingUnits.map((u) => u.text).join('\n\n');
+    lastTarget.textChunk = [lastTarget.textChunk, extraText].filter(Boolean).join('\n\n');
+    lastTarget.charCount = lastTarget.textChunk.length;
+  }
+
+  // מילוי אם יש פחות סשנים מ-targetSessionCount
+  while (builtSessions.length < targetSessionCount) {
+    const prev = builtSessions[builtSessions.length - 1];
+    builtSessions.push({
+      sessionIndex: builtSessions.length,
+      title: `אינטגרציה וחזרה מסכמת: ${prev.title}`,
+      fileName: prev.fileName,
+      rationale: 'סשן חזרה ואינטגרציה קלינית לפני הבחינה',
+      textChunk: prev.textChunk,
+      charCount: prev.charCount,
+    });
+  }
+
+  return {
+    strategy: aiPlan.pedagogicalStrategy || 'הנושאים סודרו מהיסודות התיאורטיים אל ההתערבות הקלינית.',
+    sessions: builtSessions,
+  };
 }
 
 async function generateInteractiveLessonBlocks(apiKey: string, topic: string, rawTextChunk: string, duration: number) {
@@ -400,7 +544,7 @@ async function generateInteractiveLessonBlocks(apiKey: string, topic: string, ra
   const prompt = `אתה מרצה ומדריך קליני בסיעוד. בנה שיעור אינטראקטיבי בעברית לנושא '${topic}' עבור סשן של ${duration} דקות.
 הנחיית תעדוף זמן: ${cfg.triageMode}
 
-חלק את השיעור ל-${cfg.blocksCount} שלבי לימוד עוקבים (blocks).
+חלק את השיעור ל-${cfg.blocksCount} שלבי לימוד עוקבים (blocks) בסדר דידקטי ברור (מהגדרה ומנגנון אל אבחון והתערבות סיעודית).
 בכל שלב:
 1. "title": כותרת ממוקדת.
 2. "explanation": הסבר בהיר ומעמיק בן ${cfg.sentencesPerBlock} משפטים מתוך החומר בלבד.
@@ -580,7 +724,44 @@ const getFallbackLesson = (topic: string, duration: number) => {
 };
 
 // ==========================================
-// 5. הקומפוננטה הראשית
+// 5. מנוע הקראה בעברית (Google TTS Audio Queue)
+// ==========================================
+function splitTextToHebrewAudioChunks(text: string, maxLen = 175): string[] {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+
+  const sentences = cleaned.split(/(?<=[.!?।:;])\s+/);
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    if ((current + ' ' + sentence).trim().length <= maxLen) {
+      current = (current + ' ' + sentence).trim();
+    } else {
+      if (current) chunks.push(current);
+      if (sentence.length <= maxLen) {
+        current = sentence;
+      } else {
+        const words = sentence.split(' ');
+        let wBuf = '';
+        for (const w of words) {
+          if ((wBuf + ' ' + w).trim().length <= maxLen) {
+            wBuf = (wBuf + ' ' + w).trim();
+          } else {
+            if (wBuf) chunks.push(wBuf);
+            wBuf = w;
+          }
+        }
+        current = wBuf;
+      }
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+// ==========================================
+// 6. הקומפוננטה הראשית
 // ==========================================
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
@@ -655,11 +836,13 @@ export default function App() {
 
   const [pocketSummaryScope, setPocketSummaryScope] = useState<'session' | 'course' | null>(null);
 
-  // חיפוש חכם חוצה-קורס (#4)
+  // חיפוש חכם חוצה-קורס
   const [courseSearchQuery, setCourseSearchQuery] = useState('');
 
-  // הקראה קולית (#5 - Audio Mode)
+  // הקראה קולית בעברית (Audio Ref Queue)
   const [speakingBlockKey, setSpeakingBlockKey] = useState<string | null>(null);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const speechAbortRef = useRef<boolean>(false);
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
@@ -709,42 +892,79 @@ export default function App() {
     return () => clearInterval(timer);
   }, [gameStarted, gameOver, timeLeft, activeTab]);
 
-  // עצירת הקראה בעת יציאה או מעבר מסך
   useEffect(() => {
     return () => {
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
+      stopSpeech();
     };
   }, [step, activeTab]);
 
   const stopSpeech = () => {
+    speechAbortRef.current = true;
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.pause();
+      audioPlayerRef.current.src = '';
+      audioPlayerRef.current = null;
+    }
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
     setSpeakingBlockKey(null);
   };
 
-  const toggleSpeech = (key: string, textToRead: string) => {
-    if (!('speechSynthesis' in window)) {
-      alert('הדפדפן שלך אינו תומך בהקראה קולית.');
-      return;
-    }
-
+  const toggleSpeech = async (key: string, textToRead: string) => {
     if (speakingBlockKey === key) {
       stopSpeech();
       return;
     }
 
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(textToRead);
-    utterance.lang = 'he-IL';
-    utterance.rate = 1.02;
-    utterance.onend = () => setSpeakingBlockKey(null);
-    utterance.onerror = () => setSpeakingBlockKey(null);
-
+    stopSpeech();
+    speechAbortRef.current = false;
     setSpeakingBlockKey(key);
-    window.speechSynthesis.speak(utterance);
+
+    const chunks = splitTextToHebrewAudioChunks(textToRead, 175);
+    if (chunks.length === 0) {
+      setSpeakingBlockKey(null);
+      return;
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      if (speechAbortRef.current) break;
+
+      const chunk = chunks[i];
+      const hasHebrew = /[\u0590-\u05FF]/.test(chunk);
+      const lang = hasHebrew ? 'he' : 'en';
+      const ttsUrl = `https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=${lang}&q=${encodeURIComponent(chunk)}`;
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          if (speechAbortRef.current) {
+            resolve();
+            return;
+          }
+          const audio = new Audio(ttsUrl);
+          audioPlayerRef.current = audio;
+          audio.playbackRate = 1.08;
+          audio.onended = () => resolve();
+          audio.onerror = () => reject(new Error('TTS Audio Error'));
+          audio.play().catch(reject);
+        });
+      } catch {
+        // Fallback ל-SpeechSynthesis במקרה של חסימת רשת
+        if ('speechSynthesis' in window && !speechAbortRef.current) {
+          await new Promise<void>((resolve) => {
+            const utter = new SpeechSynthesisUtterance(chunk);
+            utter.lang = hasHebrew ? 'he-IL' : 'en-US';
+            utter.onend = () => resolve();
+            utter.onerror = () => resolve();
+            window.speechSynthesis.speak(utter);
+          });
+        }
+      }
+    }
+
+    if (!speechAbortRef.current) {
+      setSpeakingBlockKey(null);
+    }
   };
 
   const saveApiKey = (val: string) => {
@@ -929,53 +1149,49 @@ export default function App() {
       ? activeCourse.schedule
           .filter((s: any) => !s.completed)
           .map((s: any) => ({
-            name: `המשך: ${s.topic}`,
+            name: s.topic,
             text: s.textChunk,
             wordCount: s.textChunk.split(/\s+/).length,
           }))
       : [];
 
     const allFilesToSchedule = [...uncompletedOldFiles, ...files];
-    const deterministicChunks = splitFilesIntoDeterministicChunks(allFilesToSchedule, studyDates.length);
+    const naturalUnits = extractNaturalTopicUnits(allFilesToSchedule);
 
     if (apiKey.trim()) {
       setIsPlanningAI(true);
       try {
-        const aiTitles = await enrichChunksWithAITitles(apiKey.trim(), deterministicChunks, sessionDuration);
-        const plannedSessions = deterministicChunks.map((chunk, idx) => {
-          const meta = aiTitles.titles?.find((t: any) => t.index === idx) || aiTitles.titles?.[idx];
-          return {
-            title: meta?.title || `${chunk.fileName} (חלק ${idx + 1})`,
-            fileName: chunk.fileName,
-            rationale: meta?.rationale || 'חלוקה רציפה מלאה של החומר',
-            textChunk: chunk.textChunk,
-            charCount: chunk.charCount,
-          };
-        });
+        const organized = await organizeUnitsPedagogicallyWithAI(
+          apiKey.trim(),
+          naturalUnits,
+          studyDates.length,
+          sessionDuration
+        );
 
         setDraftPlan({
-          strategy: aiTitles.pedagogicalStrategy || 'כל החומר חולק במלואו ללא חפיפות על פני הימים הנותרים.',
+          strategy: organized.strategy,
           dates: studyDates,
-          sessions: plannedSessions,
+          sessions: organized.sessions,
           preservedCompleted: completedSessions,
         });
         setStep(1.5);
       } catch (err: any) {
-        alert('שגיאה בתכנון מול ה-AI: ' + err.message);
+        console.warn('עובר לחלוקה מאוזנת מקומית:', err);
+        const fallbackSessions = fallbackBalancedMerge(naturalUnits, studyDates.length);
+        setDraftPlan({
+          strategy: 'חלוקה ליחידות נושאיות שלמות מתוך הקבצים.',
+          dates: studyDates,
+          sessions: fallbackSessions,
+          preservedCompleted: completedSessions,
+        });
+        setStep(1.5);
       } finally {
         setIsPlanningAI(false);
       }
     } else {
-      const fallbackSessions = deterministicChunks.map((chunk, idx) => ({
-        title: `${chunk.fileName} - יחידה ${idx + 1}`,
-        fileName: chunk.fileName,
-        rationale: 'חלוקה רציפה מלאה של הטקסט',
-        textChunk: chunk.textChunk,
-        charCount: chunk.charCount,
-      }));
-
+      const fallbackSessions = fallbackBalancedMerge(naturalUnits, studyDates.length);
       setDraftPlan({
-        strategy: 'חלוקה רציפה של כל החומר ללא איבוד טקסט.',
+        strategy: 'חלוקה ליחידות נושאיות שלמות מתוך הקבצים.',
         dates: studyDates,
         sessions: fallbackSessions,
         preservedCompleted: completedSessions,
@@ -1188,7 +1404,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). נלמד שלב אחרי שלב — תוכל לשאול אותי כאן על כל סעיף (למשל: "לא הבנתי את סעיף 1").`,
+        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). אני רואה בזמן אמת באיזה טאב ושלב את/ה נמצא/ת (שיעור, כרטיסיות, בוחן או Code Blue) ואענה בהתאם למסך הפעיל.`,
       },
     ]);
 
@@ -1570,6 +1786,79 @@ export default function App() {
     }
   };
 
+  // בניית הקשר מדויק של המסך הנוכחי עבור הצ'אט הצדדי
+  const buildActiveScreenContext = () => {
+    if (activeTab === 'game') {
+      const cbAttempt = studyContent?.codeBlueAttempts?.[activeCodeBlueAttemptIdx];
+      if (!cbAttempt) return 'הסטודנט/ית נמצא/ת בטאב Code Blue.';
+      if (gameStarted && !gameOver && cbAttempt.cases?.[caseIndex]) {
+        const currentCase = cbAttempt.cases[caseIndex];
+        return `הסטודנט/ית נמצא/ת כעת באמצע סימולציית חירום Code Blue!
+תרחיש מוצג כעת על המסך (תרחיש #${caseIndex + 1} מתוך ${cbAttempt.cases.length}):
+- תיאור המקרה והמדדים: ${currentCase.scenario}
+- השאלה המוצגת: ${currentCase.question}
+- אפשרויות ההתערבות המוצגות על המסך: ${currentCase.options.map((o: string, i: number) => `${i + 1}) ${o}`).join(' | ')}
+- ההתערבות הנכונה לפי הפרוטוקול: ${currentCase.options[currentCase.correct]} (נימוק: ${currentCase.rationale})
+- מצב יציבות המטופל כעת: ${patientStability}%, זמן שנותר: ${timeLeft} שניות.
+הנחיה קריטית: הסטודנט/ית מסתכל/ת על תרחיש זה של Code Blue. ענה לשאלה שלו/ה בהתייחס לתרחיש Code Blue הזה! (אם המשחק עדיין רץ והסטודנט שואל רמז, תן הכוונה קלינית בלי להסגיר ישר את מספר התשובה אלא אם ביקש הסבר מפורש).`;
+      }
+      if (gameOver && cbAttempt.cases) {
+        const summary = cbAttempt.cases
+          .map((c: any, idx: number) => {
+            const chosen = codeBlueAnswers[idx];
+            return `תרחיש #${idx + 1}: ${c.scenario} | שאלה: ${c.question} | הסטודנט בחר: ${chosen !== undefined ? c.options[chosen] : 'לא נענה'} | הנכון: ${c.options[c.correct]} (${c.rationale})`;
+          })
+          .join('\n');
+        return `הסטודנט/ית סיים/ה כעת סימולציית Code Blue ומסתכל/ת על מסך הסיכום של התרחישים:
+${summary}
+הנחיה: ענה לשאלות הסטודנט/ית בהתייחס לתרחישי Code Blue הללו!`;
+      }
+      return `הסטודנט/ית נמצא/ת במסך הפתיחה של סימולציית Code Blue לנושא "${activeSession.topic}".`;
+    }
+
+    if (activeTab === 'quiz') {
+      const qAttempt = studyContent?.quizAttempts?.[activeQuizAttemptIdx];
+      if (!qAttempt) return 'הסטודנט/ית נמצא/ת בטאב הבוחן המסכם.';
+      const questionsList = (qAttempt.questions || [])
+        .map((q: any, idx: number) => {
+          const chosen = quizAnswers[idx];
+          return `שאלה ${idx + 1}: ${q.q}
+אפשרויות: ${q.opts.map((o: string, i: number) => `${i + 1}) ${o}`).join(' | ')}
+בחירת הסטודנט: ${chosen !== undefined ? q.opts[chosen] : 'טרם סימן'}
+תשובה נכונה: ${q.opts[q.ans]} (הסבר: ${q.explanation})`;
+        })
+        .join('\n\n');
+
+      return `הסטודנט/ית נמצא/ת כעת בטאב "בוחן מסכם" (סטטוס: ${quizSubmitted ? 'הבוחן הוגש ונבדק' : 'באמצע פתרון הבוחן'}).
+אלו השאלות המוצגות כעת על המסך של הסטודנט/ית:
+${questionsList}
+הנחיה: אם הסטודנט/ית שואל/ת על שאלה מהבוחן, התייחס ישירות לשאלות הבוחן שלמעלה (ולא לסעיפי השיעור המודרך, אלא אם ביקש במפורש).`;
+    }
+
+    if (activeTab === 'flashcards') {
+      const currentCard = studyContent?.flashcards?.[cardIndex];
+      if (!currentCard) return 'הסטודנט/ית נמצא/ת בטאב כרטיסיות השינון.';
+      return `הסטודנט/ית נמצא/ת כעת בטאב "כרטיסיות שינון" (כרטיסייה ${cardIndex + 1} מתוך ${studyContent.flashcards.length}).
+הכרטיסייה המוצגת כעת על המסך:
+- חזית (מושג/שאלה): ${currentCard.front}
+- גב (הסבר קליני): ${currentCard.back}
+הנחיה: ענה לשאלות הסטודנט/ית בהתייחס לכרטיסייה המוצגת כעת על המסך.`;
+    }
+
+    // ברירת מחדל: טאב "שיעור מודרך"
+    const blocksContext = (studyContent?.blocks || [])
+      .map(
+        (b: any, idx: number) =>
+          `--- סעיף ${idx + 1} (${idx <= unlockedBlockIdx ? 'פתוח ומוצג כעת על המסך' : 'נעול עדיין'}): ${b.title} ---\n${b.explanation}\nשאלת הבדיקה בסעיף: ${b.checkQuestion}`
+      )
+      .join('\n\n');
+
+    return `הסטודנט/ית נמצא/ת כעת בטאב "שיעור מודרך".
+אלו הסעיפים המוצגים על המסך:
+${blocksContext}
+הנחיה: אם הסטודנט/ית שואל/ת על סעיף מסוים (למשל "סעיף 1" או "לא הבנתי את הקטע הזה"), התייחס ישירות לסעיף המתאים מהרשימה שלמעלה.`;
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -1580,7 +1869,7 @@ export default function App() {
     if (!apiKey.trim()) {
       setChatMessages((prev) => [
         ...prev,
-        { role: 'ai', text: 'כדי שאוכל לענות מתוך הקבצים והסעיפים שלך, הזן מפתח Gemini API בהגדרות למעלה.' },
+        { role: 'ai', text: 'כדי שאוכל לענות מתוך המסך והקבצים שלך, הזן מפתח Gemini API בהגדרות למעלה.' },
       ]);
       return;
     }
@@ -1588,25 +1877,23 @@ export default function App() {
     setIsChatLoading(true);
     try {
       const studentContext = userName.trim() ? `שם הסטודנט/ית הוא ${userName.trim()}.` : '';
-      const blocksContext = (studyContent?.blocks || [])
-        .map(
-          (b: any, idx: number) =>
-            `--- סעיף ${idx + 1} (${idx <= unlockedBlockIdx ? 'פתוח כעת מול הסטודנט' : 'טרם נפתח'}): ${b.title} ---\n${b.explanation}`
-        )
-        .join('\n\n');
+      const screenContext = buildActiveScreenContext();
 
       const prompt = `אתה מרצה ומדריך קליני בכיר בסיעוד. ${studentContext}
-הסטודנט/ית נמצא/ת כעת בלמידת הנושא "${activeSession.topic}".
-לפניך סעיפי השיעור המודרך המדויקים שמוצגים כעת על המסך של הסטודנט (ממוספרים כסעיף 1, סעיף 2 וכו'):
+נושא הסשן הנוכחי: "${activeSession.topic}".
 
-${blocksContext}
+=== מה מוצג כרגע על המסך של הסטודנט/ית ===
+${screenContext}
+=========================================
 
-בנוסף, הנה חומר המקור המלא של הסשן:
-${activeSession.textChunk.slice(0, 22000)}
+חומר המקור המלא של הסשן (לגיבוי והעמקה):
+${activeSession.textChunk.slice(0, 18000)}
 
-הנחיה: אם הסטודנט שואל על "סעיף 1", "הסעיף השני", "הקטע הזה" או מבקש הסבר נוסף — התייחס ישירות לסעיף המתאים מתוך רשימת הסעיפים שלמעלה והסבר אותו בצורה ברורה, קלינית ומעשית בעברית.
+כללי מענה חשובים:
+1. שים לב בראש ובראשונה למסך הפעיל של הסטודנט/ית (המתואר למעלה). אם הסטודנט/ית בטאב Code Blue או בוחן או כרטיסיות — אל תניח שהוא/היא מדבר/ת על סעיפי השיעור המודרך, אלא על התרחיש, השאלה או הכרטיסייה שמוצגים לו/לה כעת על המסך!
+2. ענה בעברית ברורה, קלינית וממוקדת.
 
-שאלת הסטודנט: ${userMsg}`;
+הודעת הסטודנט/ית: ${userMsg}`;
 
       const reply = await callGeminiWithFallback(apiKey.trim(), prompt, false);
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה.' }]);
@@ -1658,7 +1945,6 @@ ${activeSession.textChunk.slice(0, 22000)}
     }
   };
 
-  // חישוב מד מוכנות לבחינה ואנליטיקה לקורס (#3)
   const getCourseAnalytics = (course: any) => {
     if (!course) return null;
     const totalSessions = course.schedule.length;
@@ -1731,7 +2017,6 @@ ${activeSession.textChunk.slice(0, 22000)}
     };
   };
 
-  // חיפוש חכם חוצה-קורס (#4)
   const getCourseSearchResults = (course: any, query: string) => {
     const q = query.trim().toLowerCase();
     if (!course || q.length < 2) return [];
@@ -1743,7 +2028,6 @@ ${activeSession.textChunk.slice(0, 22000)}
     }[] = [];
 
     course.schedule.forEach((sess: any) => {
-      // חיפוש בסעיפי השיעור המודרך אם כבר נוצרו
       const blocks = sess.savedContent?.blocks || [];
       let matchedInBlock = false;
 
@@ -1762,7 +2046,6 @@ ${activeSession.textChunk.slice(0, 22000)}
         }
       });
 
-      // חיפוש בטקסט המקור המלא של הסשן
       if (!matchedInBlock && sess.textChunk) {
         const rawIdx = sess.textChunk.toLowerCase().indexOf(q);
         if (rawIdx !== -1) {
@@ -1790,7 +2073,13 @@ ${activeSession.textChunk.slice(0, 22000)}
   const courseAnalytics = activeCourse ? getCourseAnalytics(activeCourse) : null;
   const searchResults = activeCourse ? getCourseSearchResults(activeCourse, courseSearchQuery) : [];
 
-  // תצוגת סיכום כיס להדפסה (PDF)
+  const getTabHebrewLabel = () => {
+    if (activeTab === 'game') return 'סימולציית Code Blue';
+    if (activeTab === 'quiz') return 'בוחן מסכם';
+    if (activeTab === 'flashcards') return 'כרטיסיות שינון';
+    return 'שיעור מודרך';
+  };
+
   if (pocketSummaryScope && activeCourse) {
     const sessionsToPrint =
       pocketSummaryScope === 'session' && activeSession
@@ -1988,7 +2277,7 @@ ${activeSession.textChunk.slice(0, 22000)}
         </div>
       )}
 
-      {/* מודאל מרתון תיקון טעויות חוצה-קורס */}
+      {/* מודאל מרתון תיקון טעויות */}
       {showMistakesModal && activeCourse && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-40 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl">
@@ -2242,8 +2531,8 @@ ${activeSession.textChunk.slice(0, 22000)}
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
                   {isAddingMaterialMode
-                    ? 'הסשנים שכבר השלמת יישמרו. החומר החדש והסשנים שטרם נלמדו ייפרסו מחדש על הימים שנותרו עד המבחן.'
-                    : 'כל הטקסט מהקבצים יישמר ויחולק במלואו ללא חפיפות או קיצוץ שקט.'}
+                    ? 'הסשנים שכבר השלמת יישמרו. החומר החדש והסשנים שטרם נלמדו יסודרו מחדש על הימים שנותרו עד המבחן.'
+                    : 'המערכת מזהה יחידות נושאיות שלמות מתוך הקבצים ומסדרת אותן מהיסודות אל ההתערבות הקלינית.'}
                 </p>
 
                 <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer transition bg-slate-50/50 dark:bg-slate-950/50">
@@ -2384,7 +2673,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                   {isPlanningAI ? (
                     <>
                       <Loader2 size={20} className="animate-spin" />
-                      <span>מחלק את כל החומר ללא חפיפות...</span>
+                      <span>מסדר את הנושאים לפי סדר פדגוגי הגיוני...</span>
                     </>
                   ) : (
                     <>
@@ -2404,7 +2693,7 @@ ${activeSession.textChunk.slice(0, 22000)}
               <div className="flex flex-wrap justify-between items-start gap-4">
                 <div>
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-500 flex items-center gap-1.5 w-fit">
-                    <Brain size={14} /> בקרת סילבוס (100% כיסוי חומר • 0% חפיפה)
+                    <Brain size={14} /> סדר למידה פדגוגי מבוסס נושאים
                   </span>
                   <h2 className="text-2xl font-bold mt-2">
                     {isAddingMaterialMode ? 'תוכנית מעודכנת ליתרת הימים' : 'סדר הלמידה לקורס'}
@@ -2494,7 +2783,6 @@ ${activeSession.textChunk.slice(0, 22000)}
 
         {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
-            {/* כרטיס כותרת + פעולות */}
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div className="space-y-1 max-w-2xl">
                 <div className="flex items-center gap-2">
@@ -2539,7 +2827,6 @@ ${activeSession.textChunk.slice(0, 22000)}
               </div>
             </div>
 
-            {/* מד מוכנות לבחינה ואנליטיקה (#3) */}
             {courseAnalytics && (
               <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2600,7 +2887,6 @@ ${activeSession.textChunk.slice(0, 22000)}
               </div>
             )}
 
-            {/* חיפוש חכם חוצה-קורס (#4 - Global Clinical Search) */}
             <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
               <div className="relative flex items-center">
                 <Search size={18} className="text-slate-400 absolute right-3.5 pointer-events-none" />
@@ -2652,7 +2938,6 @@ ${activeSession.textChunk.slice(0, 22000)}
               )}
             </div>
 
-            {/* רשימת סשנים */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {activeCourse.schedule.map((session: any) => (
                 <div
@@ -2737,7 +3022,6 @@ ${activeSession.textChunk.slice(0, 22000)}
                   })}
                 </div>
 
-                {/* חימום זיכרון — Spaced Repetition מכרטיסיות שסומנו לחזרה */}
                 {showWarmupBanner && courseReviewCards.length > 0 && activeTab === 'learn' && (
                   <div className="bg-amber-500/10 border-2 border-amber-500/40 p-5 rounded-2xl space-y-3">
                     <div className="flex justify-between items-center">
@@ -2821,13 +3105,12 @@ ${activeSession.textChunk.slice(0, 22000)}
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {/* הקראת כל הסעיפים הפתוחים ברצף (#5) */}
                         <button
                           onClick={() => {
                             const openBlocks = (studyContent.blocks || []).filter((_: any, i: number) => i <= unlockedBlockIdx);
                             const fullText = openBlocks
                               .map((b: any, i: number) => `סעיף ${i + 1}. ${b.title}. ${b.explanation}`)
-                              .join(' ... ');
+                              .join('. ');
                             toggleSpeech('all-open', fullText);
                           }}
                           className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
@@ -2837,7 +3120,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                           }`}
                         >
                           {speakingBlockKey === 'all-open' ? <Square size={14} /> : <Volume2 size={15} />}
-                          <span>{speakingBlockKey === 'all-open' ? 'עצור הקראה' : 'האזן לשיעור'}</span>
+                          <span>{speakingBlockKey === 'all-open' ? 'עצור הקראה' : 'האזן לשיעור בעברית'}</span>
                         </button>
 
                         <button
@@ -2884,7 +3167,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                                     ? 'bg-rose-600 text-white'
                                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-blue-500/10 hover:text-blue-500'
                                 }`}
-                                title="הקרא סעיף זה בקול"
+                                title="הקרא סעיף זה בעברית"
                               >
                                 {speakingBlockKey === blockSpeechKey ? <Square size={13} /> : <Volume2 size={14} />}
                                 <span>{speakingBlockKey === blockSpeechKey ? 'עצור' : 'האזן'}</span>
@@ -3415,13 +3698,17 @@ ${activeSession.textChunk.slice(0, 22000)}
 
               <div className="lg:col-span-5">
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col h-[620px] sticky top-24 shadow-sm">
-                  <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2.5">
-                    <div className="bg-blue-600/10 text-blue-500 p-2 rounded-lg">
-                      <MessageSquare size={18} />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-sm">מרצה קליני (AI Nursing Tutor)</h3>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">מכיר את כל סעיפי השיעור המודרך בזמן אמת</p>
+                  <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="bg-blue-600/10 text-blue-500 p-2 rounded-lg">
+                        <MessageSquare size={18} />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-sm">מרצה קליני (AI Nursing Tutor)</h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          מחובר למסך: <span className="font-semibold text-blue-500">{getTabHebrewLabel()}</span>
+                        </p>
+                      </div>
                     </div>
                   </div>
 
@@ -3450,7 +3737,13 @@ ${activeSession.textChunk.slice(0, 22000)}
                       type="text"
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="לדוגמה: לא הבנתי את סעיף 1, תסביר שוב..."
+                      placeholder={
+                        activeTab === 'game'
+                          ? 'שאל על תרחיש ה-Code Blue שלפניך...'
+                          : activeTab === 'quiz'
+                          ? 'שאל על שאלה מהבוחן שלפניך...'
+                          : 'שאל על הסעיף או הכרטיסייה שלפניך...'
+                      }
                       className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
                     />
                     <button
