@@ -63,7 +63,18 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-// 1. מנוע תכנון פדגוגי מהיר מבוסס AI
+// פונקציית עזר לדגימה חכמה שמכסה התחלה, אמצע וסוף של סשן ארוך בלי לאבד נושאים
+function getSmartCoveredText(text, maxChars = 8500) {
+  if (!text || text.length <= maxChars) return text;
+  const partSize = Math.floor(maxChars / 3);
+  const start = text.slice(0, partSize);
+  const midStart = Math.floor(text.length / 2) - Math.floor(partSize / 2);
+  const middle = text.slice(midStart, midStart + partSize);
+  const end = text.slice(text.length - partSize);
+  return `${start}\n\n[...המשך הפרק...]\n\n${middle}\n\n[...חלק אחרון של הפרק...]\n\n${end}`;
+}
+
+// 1. מנוע תכנון פדגוגי מהיר מבוסס AI (מחלק קבצים גדולים לתתי-פרקים כדי שלא יחסר חומר)
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
     fileIndex: idx,
@@ -73,16 +84,17 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
   }));
 
   const prompt = `אתה מתכנן תוכניות לימוד ברפואה. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם (אנטומיה/פיזיולוגיה -> פתופיזיולוגיה -> קליניקה/טיפול).
+אם קובץ ארוך (מעל 1,200 מילים), פצל אותו על פני מספר סשנים עוקבים בעזרת startPercent ו-endPercent כדי ששום חומר לא יידחס מדי.
 החזר JSON תקין בלבד:
 {
   "pedagogicalStrategy": "משפט אחד קצר על סדר הלימוד",
   "sessions": [
     {
       "sessionNumber": 1,
-      "title": "כותרת קצרה לסשן",
+      "title": "כותרת ממוקדת לסשן",
       "fileIndex": 0,
       "startPercent": 0,
-      "endPercent": 100,
+      "endPercent": 50,
       "rationale": "נימוק קצר עד 8 מילים"
     }
   ]
@@ -114,13 +126,15 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
   }
 }
 
-// 2. יצירת חומר לימוד מובנה במהירות גבוהה (מותאם לתגובה מהירה)
+// 2. יצירת חומר לימוד מובנה המכסה את כל חלקי הסשן (התחלה, אמצע וסוף)
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
-  const prompt = `מרצה לרפואה: בנה יחידת לימוד תמציתית בעברית לנושא "${topic}" מתוך הטקסט.
+  const coveredText = getSmartCoveredText(rawTextChunk, 8500);
+
+  const prompt = `מרצה לרפואה: בנה יחידת לימוד מקיפה אך תמציתית בעברית לנושא "${topic}" המכסה את כל חלקי הטקסט המצורף.
 החזר JSON תקין בלבד:
 {
-  "summary": "סיכום קליני ממוקד (2-3 משפטים)",
-  "keyPoints": ["נקודה 1", "נקודה 2", "נקודה 3"],
+  "summary": "סיכום קליני ברור המכסה את כל חלקי הטקסט (3-4 משפטים)",
+  "keyPoints": ["נקודת מפתח מהחלק הראשון", "נקודת מפתח מהחלק האמצעי", "נקודת מפתח מהחלק האחרון", "נקודה קלינית נוספת"],
   "comparisonTable": [
     {"param": "פרמטר", "acute": "מאפיין א׳", "chronic": "מאפיין ב׳"}
   ],
@@ -132,11 +146,13 @@ async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
   "flashcards": [
     {"id": 1, "front": "מושג 1", "back": "הסבר קצר"},
     {"id": 2, "front": "מושג 2", "back": "הסבר קצר"},
-    {"id": 3, "front": "מושג 3", "back": "הסבר קצר"}
+    {"id": 3, "front": "מושג 3", "back": "הסבר קצר"},
+    {"id": 4, "front": "מושג 4", "back": "הסבר קצר"}
   ],
   "chapterQuiz": [
     {"q": "שאלה 1", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 0},
-    {"q": "שאלה 2", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 1}
+    {"q": "שאלה 2", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 1},
+    {"q": "שאלה 3", "opts": ["אפשרות 1", "אפשרות 2", "אפשרות 3"], "ans": 2}
   ],
   "codeBlueCases": [
     {"scenario": "מקרה קצר במיון", "question": "מה הפעולה הנכונה?", "options": ["פעולה נכונה", "טעות 1", "טעות 2"], "correct": 0},
@@ -145,7 +161,7 @@ async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
 }
 
 טקסט:
-${rawTextChunk.slice(0, 6000)}`;
+${coveredText}`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -172,7 +188,6 @@ ${rawTextChunk.slice(0, 6000)}`;
     clearTimeout(timeoutId);
   }
 }
-
 // נתוני גיבוי למקרה שלא הוזן מפתח API
 const getFallbackContent = (topic) => ({
   summary: `מצב הדגמה עבור "${topic}". כדי שהמערכת תנתח את הטקסט האמיתי מהקבצים שהעלית, לחץ על כפתור ההגדרות למעלה והזן מפתח Gemini API חינמי.`,
