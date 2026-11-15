@@ -72,10 +72,11 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
+  // שמות מודלים מדויקים המותאמים ל-v1beta API למניעת שגיאות 404
   const models = [
-    { name: 'gemini-2.5-flash', timeout: 45000 },
-    { name: 'gemini-3.5-flash-lite', timeout: 45000 },
-    { name: 'gemini-1.5-flash', timeout: 60000 }
+    { name: 'gemini-1.5-flash', timeout: 45000 },
+    { name: 'gemini-1.5-pro', timeout: 45000 },
+    { name: 'gemini-pro', timeout: 60000 }
   ];
   let lastError = null;
 
@@ -244,7 +245,7 @@ const getFallbackContent = (topic) => ({
 });
 
 export default function App() {
-  const [darkMode, setDarkMode] = useState(false); // ברירת מחדל מצב יום (false)
+  const [darkMode, setDarkMode] = useState(false); // ברירת מחדל מצב יום נקי
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
@@ -586,7 +587,6 @@ export default function App() {
       }
     ]);
 
-    // אם התוכן כבר קיים (שמור), נשתמש בו מיד בלי לייצר מחדש
     if (session.savedContent) {
       setStudyContent(session.savedContent);
       return;
@@ -650,7 +650,6 @@ export default function App() {
       const newCardsData = JSON.parse(resText);
       setStudyContent((prev) => {
         const updated = { ...prev, flashcards: newCardsData };
-        // עדכון גם בקורסים השמורים
         if (activeCourse) {
           setCourses((cList) =>
             cList.map((c) =>
