@@ -77,7 +77,7 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
     { name: 'gemini-3.5-flash-lite', timeout: 25000 }
   ];
   let lastError = null;
-
+  
   for (const m of models) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), m.timeout);
