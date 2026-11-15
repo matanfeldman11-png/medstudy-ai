@@ -73,12 +73,10 @@ function getSmartCoveredText(text, maxChars = 7500) {
   const end = text.slice(text.length - partSize);
   return `${start}\n\n[...המשך הפרק...]\n\n${middle}\n\n[...חלק אחרון של הפרק...]\n\n${end}`;
 }
-
-// פונקציית עזר מהירה: מנסה gemini-3.8-flash עד 8 שניות, ואם עמוס עוברת מיד למודל המהיר gemini-2.5-flash-lite
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   const models = [
     { name: 'gemini-3.8-flash', timeout: 8000 },
-    { name: 'gemini-2.5-flash-lite', timeout: 15000 }
+    { name: 'gemini-3.5-flash-lite', timeout: 15000 }
   ];
   let lastError = null;
 
