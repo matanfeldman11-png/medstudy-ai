@@ -10,7 +10,6 @@ import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 
-// הגדרת Worker לקריאת PDF בדפדפן
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 const DAYS_OF_WEEK = [
@@ -23,7 +22,6 @@ const DAYS_OF_WEEK = [
   { id: 6, label: 'ש׳', full: 'שבת' },
 ];
 
-// חילוץ טקסט אמיתי מכל סוגי הקבצים
 async function extractTextFromFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   const arrayBuffer = await file.arrayBuffer();
@@ -63,21 +61,20 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-// דגימה חכמה ומורחבת המבטיחה עומק אקדמי ללימוד סיעודי
-function getSmartCoveredText(text, maxChars = 14000) {
+function getSmartCoveredText(text, maxChars = 22000) {
   if (!text || text.length <= maxChars) return text;
   const partSize = Math.floor(maxChars / 3);
   const start = text.slice(0, partSize);
   const midStart = Math.floor(text.length / 2) - Math.floor(partSize / 2);
   const middle = text.slice(midStart, midStart + partSize);
   const end = text.slice(text.length - partSize);
-  return `${start}\n\n[...המשך חומר הלימוד...]\n\n${middle}\n\n[...חלק מתקדם של הפרק...]\n\n${end}`;
+  return `${start}\n\n[...המשך חומר לימוד מעמיק...]\n\n${middle}\n\n[...חלק מתקדם נוסף...]\n\n${end}`;
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   const models = [
-    { name: 'gemini-3.8-flash', timeout: 8000 },
-    { name: 'gemini-3.5-flash-lite', timeout: 15000 }
+    { name: 'gemini-3.8-flash', timeout: 12000 },
+    { name: 'gemini-3.5-flash-lite', timeout: 20000 }
   ];
   let lastError = null;
 
@@ -115,7 +112,6 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   throw lastError;
 }
 
-// 1. מנוע תכנון סילבוס אקדמי לסיעוד
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
     fileIndex: idx,
@@ -124,10 +120,10 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
     excerpt: f.text.slice(0, 600)
   }));
 
-  const prompt = `אתה מרצה בכיר לסיעוד. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם (אנטומיה/פיזיולוגיה -> פתופיזיולוגיה -> הערכה סיעודית וטיפול קליני).
+  const prompt = `אתה מרצה בכיר לסיעוד. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם.
 החזר JSON תקין בלבד:
 {
-  "pedagogicalStrategy": "סקירה קצרה של סדר הלימוד הקליני",
+  "pedagogicalStrategy": "סקירה קצרה של סדר הלימוד",
   "sessions": [
     {
       "sessionNumber": 1,
@@ -145,101 +141,104 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
   return JSON.parse(jsonText);
 }
 
-// 2. יצירת יחידת לימוד מעמיקה המבוססת אך ורק על טקסט הפרק
+// יחידת לימוד מורחבת המייצרת 10 כרטיסיות ו-10 שאלות בוחן עמוקות
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
-  const coveredText = getSmartCoveredText(rawTextChunk, 14000);
+  const coveredText = getSmartCoveredText(rawTextChunk, 22000);
 
-  const prompt = `מרצה בכיר לסיעוד: בנה יחידת לימוד אקדמית, מעמיקה ומפורטת מאוד בעברית לנושא "${topic}" מתוך טקסט החובה המצורף להלן בלבד. אל תמציא עובדות מחוץ לטקסט.
-החזר JSON תקין בלבד:
+  const prompt = `מרצה בכיר לסיעוד: בנה יחידת לימוד אקדמית, מקיפה ומעמיקה מאוד בעברית לנושא "${topic}" מתוך טקסט החובה המצורף.
+דרישות חובה:
+1. סיכום קליני עשיר ومفصل (6-8 פסקאות או משפטים מרובים המכסים את כלל ההיבטים הפתופיזיולוגיים והסיעודיים).
+2. לפחות 8 נקודות מפתח קליניות מפורטות.
+3. טבלת השוואה מפורטת.
+4. שאלת "וידוא הבנה" אחת.
+5. בדיוק 10 כרטיסיות שינון מפורטות (flashcards) עם מונחים מתוך הטקסט.
+6. בדיוק 10 שאלות רב-בררותיות בבוחן סוף הפרק (chapterQuiz), כאשר לכל שאלה יש 4 אפשרויות והסבר קליני מפורט מדוע התשובה נכונה ומה משמעות הטעות.
+7. 3 מקרי Code Blue קליניים.
+
+החזר JSON תקין בלבד במבנה הבא:
 {
-  "summary": "סקירה קלינית וסיעודית מקיפה ומעמיקה המכסה את כל פרטי הטקסט (4-5 משפטים עשירים במידע)",
+  "summary": "סיכום קליני וסיעודי מקיף ומפורט ביותר (מספר פסקאות או משפטים עשירים המכסים את כל החומר)",
   "keyPoints": [
-    "נקודת מפתח סיעודית/קלינית 1 מתוך הטקסט",
-    "נקודת מפתח 2 מתוך הטקסט",
-    "נקודת מפתח 3 מתוך הטקסט",
-    "נקודת מפתח 4 מתוך הטקסט",
-    "נקודת מפתח 5 מתוך הטקסט"
+    "נקודה מפורטת 1", "נקודה מפורטת 2", "נקודה מפורטת 3", "נקודה מפורטת 4",
+    "נקודה מפורטת 5", "נקודה מפורטת 6", "נקודה מפורטת 7", "נקודה מפורטת 8"
   ],
   "comparisonTable": [
-    {"param": "פרמטר/סימפטום", "acute": "ממצא א׳ מתוך הטקסט", "chronic": "ממצא ב׳ מתוך הטקסט"}
+    {"param": "פרמטר", "acute": "ממצא א׳", "chronic": "ממצא ב׳"}
   ],
   "comprehensionCheck": {
-    "question": "שאלת הבנה קלינית המבוססת אך ורק על הטקסט הספציפי",
-    "options": ["תשובה נכונה מדויקת", "מסיח קליני 1", "מסיח קליני 2"],
+    "question": "שאלת הבנה קלינית",
+    "options": ["תשובה נכונה", "מסיח 1", "מסיח 2"],
     "correctIndex": 0
   },
   "flashcards": [
-    {"id": 1, "front": "מושג מתוך הטקסט", "back": "הסבר מפורט מתוך הטקסט בלבד"},
-    {"id": 2, "front": "מושג מתוך הטקסט", "back": "הסבר מפורט מתוך הטקסט בלבד"},
-    {"id": 3, "front": "מושג מתוך הטקסט", "back": "הסבר מפורט מתוך הטקסט בלבד"},
-    {"id": 4, "front": "מושג מתוך הטקסט", "back": "הסבר מפורט מתוך הטקסט בלבד"}
+    {"id": 1, "front": "מושג 1", "back": "הסבר מפורט 1"},
+    {"id": 2, "front": "מושג 2", "back": "הסבר מפורט 2"},
+    {"id": 3, "front": "מושג 3", "back": "הסבר מפורט 3"},
+    {"id": 4, "front": "מושג 4", "back": "הסבר מפורט 4"},
+    {"id": 5, "front": "מושג 5", "back": "הסבר מפורט 5"},
+    {"id": 6, "front": "מושג 6", "back": "הסבר מפורט 6"},
+    {"id": 7, "front": "מושג 7", "back": "הסבר מפורט 7"},
+    {"id": 8, "front": "מושג 8", "back": "הסבר מפורט 8"},
+    {"id": 9, "front": "מושג 9", "back": "הסבר מפורט 9"},
+    {"id": 10, "front": "מושג 10", "back": "הסבר מפורט 10"}
   ],
   "chapterQuiz": [
-    {
-      "q": "שאלה ראשונה המבוססת ישירות על החומר בפרק",
-      "opts": ["אפשרות נכונה", "מסיח 1", "מסיח 2"],
-      "ans": 0,
-      "explanation": "הסבר מנומק מדוע זו התשובה הנכונה ומה המשמעות של השגיאות האחרות בהקשר הקליני."
-    },
-    {
-      "q": "שאלה שנייה המבוססת ישירות על החומר בפרק",
-      "opts": ["מסיח 1", "אפשרות נכונה", "מסיח 2"],
-      "ans": 1,
-      "explanation": "הסבר מנומק למה התשובה נכונה ומה המשמעות של בחירה שגויה."
-    },
-    {
-      "q": "שאלה שלישית המבוססת ישירות על החומר בפרק",
-      "opts": ["מסיח 1", "מסיח 2", "אפשרות נכונה"],
-      "ans": 2,
-      "explanation": "הסבר קליני מפורט על התשובה הנכונה וניתוח הטעות האפשרית."
-    }
+    { "q": "שאלה 1", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 1" },
+    { "q": "שאלה 2", "opts": ["מסיח 1", "נכונה", "מסיח 2", "מסיח 3"], "ans": 1, "explanation": "הסבר קליני מלא 2" },
+    { "q": "שאלה 3", "opts": ["מסיח 1", "מסיח 2", "נכונה", "מסיח 3"], "ans": 2, "explanation": "הסבר קליני מלא 3" },
+    { "q": "שאלה 4", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 4" },
+    { "q": "שאלה 5", "opts": ["מסיח 1", "מסיח 2", "מסיח 3", "נכונה"], "ans": 3, "explanation": "הסבר קליני מלא 5" },
+    { "q": "שאלה 6", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 6" },
+    { "q": "שאלה 7", "opts": ["מסיח 1", "נכונה", "מסיח 2", "מסיח 3"], "ans": 1, "explanation": "הסבר קליני מלא 7" },
+    { "q": "שאלה 8", "opts": ["מסיח 1", "מסיח 2", "נכונה", "מסיח 3"], "ans": 2, "explanation": "הסבר קליני מלא 8" },
+    { "q": "שאלה 9", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 9" },
+    { "q": "שאלה 10", "opts": ["מסיח 1", "מסיח 2", "מסיח 3", "נכונה"], "ans": 3, "explanation": "הסבר קליני מלא 10" }
   ],
   "codeBlueCases": [
-    {"scenario": "מקרה קליני ב מחלקה/מיון מתוך החומר", "question": "מה פעולת הסיעוד הראשונה והנכונה?", "options": ["פעולה קלינית נכונה", "טעות מסוכנת 1", "שגיאה בשיקול דעת 2"], "correct": 0},
-    {"scenario": "המשך הערכה קלינית", "question": "כיצד תמשיך לטפל במטופל?", "options": ["פעולה שגויה", "פעולה נכונה מתוך הטקסט", "התעלמות ממצאים"], "correct": 1}
+    {"scenario": "מקרה קליני 1", "question": "מה הפעולה?", "options": ["נכונה", "טעות 1", "טעות 2"], "correct": 0},
+    {"scenario": "מקרה קליני 2", "question": "מה הפעולה?", "options": ["טעות 1", "נכונה", "טעות 2"], "correct": 1},
+    {"scenario": "מקרה קליני 3", "question": "מה הפעולה?", "options": ["טעות 1", "טעות 2", "נכונה"], "correct": 2}
   ]
 }
 
-טקסט החובה ללימוד:
+טקסט החובה:
 ${coveredText}`;
 
   const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
   return JSON.parse(jsonText);
 }
 
-// נתוני גיבוי מורחבים למצב ללא מפתח API
 const getFallbackContent = (topic) => ({
-  summary: `יחידת לימוד מורחבת עבור "${topic}". על מנת שהמערכת תנתח את קבצי הסיעוד האמיתיים שלך, אנא הזן מפתח Gemini API דרך כפתור ההגדרות למעלה.`,
+  summary: `יחידת לימוד מורחבת עבור "${topic}". הזן מפתח Gemini API בהגדרות כדי לקבל 10 כרטיסיות, 10 שאלות בוחן וניתוח מעמיק מהקבצים שלך.`,
   keyPoints: [
-    'הזנת מפתח API תפעיל ניתוח עומק אוטומטי של כל עמודי הסיכום שלך.',
-    'כל השאלות והכרטיסיות יופקו אך ורק מתוך הקבצים שהעלית.',
-    'המערכת כוללת הסברים מפורטים על כל טעות בבוחן.'
+    'הזנת מפתח API מפעילה ניתוח מלא של החומר.',
+    'מופקים 10 כרטיסיות שינון מפורטות.',
+    'מופק בוחן בן 10 שאלות עם הסברי שגיאות מלאים.'
   ],
   comparisonTable: [
-    { param: 'סטטוס מערכת', acute: 'מצב הדגמה (Demo)', chronic: 'מצב לימוד אקדמי מלא (עם מפתח API)' }
+    { param: 'סטטוס', acute: 'Demo', chronic: 'AI מלא' }
   ],
   comprehensionCheck: {
-    question: 'איך מפעילים ניתוח מלא של הקבצים שלך?',
-    options: ['הזנת מפתח API חינמי בהגדרות', 'סגירת האפליקציה', 'הדפסת החומרים'],
+    question: 'איך מפעילים ניתוח מלא?',
+    options: ['הזנת מפתח API', 'סגירה'],
     correctIndex: 0
   },
-  flashcards: [
-    { id: 1, front: 'כיצד מפעילים את המנוע?', back: 'לוחצים על סמל ההגדרות בראש העמוד ומדביקים מפתח API.' },
-    { id: 2, front: 'אילו קבצים נתמכים?', back: 'PDF, Word, מצגות PPTX וקבצי טקסט.' }
-  ],
-  chapterQuiz: [
-    { 
-      q: 'האם המערכת מותאמת כעת לתוכן מתוך הקבצים שלך?', 
-      opts: ['כן, לאחר הזנת מפתח API החומר מנותח במלואו', 'לא'], 
-      ans: 0,
-      explanation: 'חיבור מפתח ה-API מבטיח שכל השאלות וההסברים ייגזרו ישירות מסיכומי הלימוד שלך.'
-    }
-  ],
+  flashcards: Array.from({ length: 10 }, (_, i) => ({
+    id: i + 1,
+    front: `מושג הדגמה מספר ${i + 1}`,
+    back: `הסבר מפורט עבור מושג מספר ${i + 1} במצב הדגמה.`
+  })),
+  chapterQuiz: Array.from({ length: 10 }, (_, i) => ({
+    q: `שאלת הדגמה מספר ${i + 1} לבחינה קלינית?`,
+    opts: ['תשובה נכונה', 'מסיח 1', 'מסיח 2', 'מסיח 3'],
+    ans: 0,
+    explanation: `הסבר מפורט לשאלה ${i + 1}: מדוע זו התשובה הנכונה ומה משמעות השגיאה.`
+  })),
   codeBlueCases: [
     {
-      scenario: 'סטודנט לסיעוד מתכונן למבחן קליני חשוב.',
-      question: 'מה עליו לעשות כדי להבטיח שליטה מלאה בחומר?',
-      options: ['ללמוד לפי סשנים מסודרים ולתרגל בוחנים עם ניתוח שגיאות', 'לדחות הכל ללילה לפני הבחינה'],
+      scenario: 'תרחיש קליני במיון לבדיקת תפקוד.',
+      question: 'מה הפעולה הנדרשת?',
+      options: ['פעולה נכונה', 'שגיאה 1', 'שגיאה 2'],
       correct: 0
     }
   ]
@@ -277,7 +276,7 @@ export default function App() {
   const [isParsingFiles, setIsParsingFiles] = useState(false);
   const [deadline, setDeadline] = useState('');
   const [selectedDays, setSelectedDays] = useState([0, 2, 4]);
-  const [sessionDuration, setSessionDuration] = useState(45);
+  const [sessionDuration, setSessionDuration] = useState(60);
 
   const [isPlanningAI, setIsPlanningAI] = useState(false);
   const [draftPlan, setDraftPlan] = useState(null);
@@ -297,7 +296,6 @@ export default function App() {
   const [isFlipped, setIsFlipped] = useState(false);
   const [knownCards, setKnownCards] = useState([]);
 
-  // מצב בוחן מורחב עם הסברי שגיאות ובוחן חדש
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [isRegeneratingQuiz, setIsRegeneratingQuiz] = useState(false);
@@ -316,7 +314,7 @@ export default function App() {
       localStorage.setItem('medstudy_courses', JSON.stringify(courses));
       if (activeCourseId) localStorage.setItem('medstudy_active_course', activeCourseId);
     } catch (e) {
-      console.warn('חריגה מנפח האחסון');
+      console.warn('שגיאת אחסון');
     }
   }, [courses, activeCourseId]);
 
@@ -340,7 +338,7 @@ export default function App() {
     setFiles([]);
     setDeadline('');
     setSelectedDays([0, 2, 4]);
-    setSessionDuration(45);
+    setSessionDuration(60);
     setDraftPlan(null);
     setStep(1);
   };
@@ -419,7 +417,7 @@ export default function App() {
           const textLen = targetFile.text.length;
           const startIdx = Math.floor(((item.startPercent || 0) / 100) * textLen);
           const endIdx = Math.floor(((item.endPercent || 100) / 100) * textLen);
-          const slice = targetFile.text.slice(startIdx, Math.max(endIdx, startIdx + 2500));
+          const slice = targetFile.text.slice(startIdx, Math.max(endIdx, startIdx + 3000));
 
           return {
             title: item.title,
@@ -451,13 +449,13 @@ export default function App() {
         return {
           title: `${currentFile.name.replace(/\.[^/.]+$/, "")} - חלק ${partNumber}`,
           fileName: currentFile.name,
-          rationale: 'חלוקה לינארית (חבר מפתח AI לסידור אקדמי)',
+          rationale: 'חלוקה לפי קבצים',
           textChunk: combinedText.slice(index * chunkSize, (index + 1) * chunkSize)
         };
       });
 
       setDraftPlan({
-        strategy: 'חלוקה לפי קבצים. מומלץ לחבר מפתח AI לקבלת סילבוס קליני מובנה.',
+        strategy: 'חלוקה לינארית של הקבצים.',
         dates: studyDates,
         sessions: fallbackSessions
       });
@@ -584,7 +582,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `היי מתן! טענתי את החומר המלא של "${session.topic}". אני כאן לענות על שאלות, להסביר מושגים קליניים או לתת דוגמאות ממחלקות בבית חולים!`
+        text: `היי מתן! טענתי את החומר המלא והמעמיק של "${session.topic}" (סשן של ${session.duration} דקות). אני כאן לכל שאלה קלינית או הסבר!`
       }
     ]);
 
@@ -624,7 +622,6 @@ export default function App() {
     }
   };
 
-  // יצירת בוחן חדש ממוקד במידת הצורך
   const regenerateNewQuiz = async () => {
     if (!apiKey.trim()) {
       alert('יש לחבר מפתח AI בהגדרות כדי לייצר בוחן חדש.');
@@ -632,17 +629,17 @@ export default function App() {
     }
     setIsRegeneratingQuiz(true);
     try {
-      const freshQuizPrompt = `צור בוחן חדש בן 3 שאלות קליניות רב-בררותיות בעברית אך ורק מתוך טקסט החומר הבא, השונה מהשאלות הקודמות.
-החזר JSON תקין בלבד:
+      const freshQuizPrompt = `צור בוחן חדש בן 10 שאלות קליניות רב-בררותיות בעברית אך ורק מתוך טקסט החומר הבא. לכל שאלה 4 אפשרויות והסבר קליני מפורט למה התשובה נכונה ומה משמעות השגיאה.
+החזר JSON תקין בלבד במבנה מערך:
 [
   {
-    "q": "שאלה חדשה",
-    "opts": ["אפשרות נכונה", "מסיח 1", "מסיח 2"],
+    "q": "שאלה קלינית",
+    "opts": ["אופציה 1", "אופציה 2", "אופציה 3", "אופציה 4"],
     "ans": 0,
-    "explanation": "הסבר מפורט מדוע זו התשובה הנכונה ומה משמעות הטעות."
+    "explanation": "הסבר מפורט"
   }
 ]
-טקסט: ${activeSession.textChunk.slice(0, 8000)}`;
+טקסט: ${activeSession.textChunk.slice(0, 15000)}`;
 
       const resText = await callGeminiWithFallback(apiKey.trim(), freshQuizPrompt, true);
       const newQuizData = JSON.parse(resText);
@@ -677,7 +674,7 @@ export default function App() {
     try {
       const reply = await callGeminiWithFallback(
         apiKey.trim(),
-        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית, ברורה וממוקדת לשאלת הסטודנט על בסיס חומר הלימוד הבא:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 15000)}\n\nשאלת הסטודנט: ${userMsg}`,
+        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית ומעמיקה לשאלת הסטודנט על בסיс חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 20000)}\n\nשאלת הסטודנט: ${userMsg}`,
         false
       );
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה.' }]);
@@ -898,7 +895,7 @@ export default function App() {
                   1. העלאת חומרי לימוד לקורס
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-                  העלה מצגות, סיכומים ונוהלי טיפול – ה-AI ינתח אותם לעומק
+                  העלה מצגות, סיכומים ונוהלי טיפול לקבלת חומר מלא ללמידה מעמיקה
                 </p>
 
                 <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer transition bg-slate-50/50 dark:bg-slate-950/50">
@@ -1215,8 +1212,8 @@ export default function App() {
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
               <Loader2 size={44} className="text-blue-500 animate-spin" />
-              <h3 className="text-lg font-bold">המרצה הקליני מנתח את חומר הסיעוד לעומק...</h3>
-              <p className="text-sm text-slate-400">בונה סיכום מקיף, טבלאות השוואה, כרטיסיות ובחנים מדויקים מהפרק</p>
+              <h3 className="text-lg font-bold">המרצה הקליני מייצר חומר מעמיק ל-60 דקות...</h3>
+              <p className="text-sm text-slate-400">בונה סיכום מקיף, 10 כרטיסיות שינון ובוחן בן 10 שאלות עם הסברי שגיאות</p>
             </div>
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
@@ -1224,8 +1221,8 @@ export default function App() {
                 <div className="grid grid-cols-4 gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800">
                   {[
                     { id: 'learn', label: 'לימוד הפרק', icon: BookOpen },
-                    { id: 'flashcards', label: 'כרטיסיות', icon: Layers },
-                    { id: 'quiz', label: 'בוחן פרק', icon: Award },
+                    { id: 'flashcards', label: `כרטיסיות (${studyContent.flashcards?.length || 10})`, icon: Layers },
+                    { id: 'quiz', label: `בוחן (${studyContent.chapterQuiz?.length || 10})`, icon: Award },
                     { id: 'game', label: 'Code Blue', icon: Activity },
                   ].map((tab) => {
                     const Icon = tab.icon;
@@ -1251,17 +1248,17 @@ export default function App() {
                   <>
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-5">
                       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
-                        <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות</span>
+                        <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות למידה</span>
                         <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
                       </div>
 
-                      <div className="space-y-2">
-                        <h3 className="font-semibold text-base text-blue-500">סקירה קלינית וסיעודית מקיפה</h3>
-                        <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">{studyContent.summary}</p>
+                      <div className="space-y-3">
+                        <h3 className="font-semibold text-base text-blue-500">סקירה קלינית וסיעודית מקיפה (תוכן מורחב)</h3>
+                        <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">{studyContent.summary}</p>
                       </div>
 
                       <div className="space-y-2">
-                        <h3 className="font-semibold text-base text-blue-500">נקודות מפתח קליניות מתוך החומר</h3>
+                        <h3 className="font-semibold text-base text-blue-500">נקודות מפתח קליניות לבחינה</h3>
                         <ul className="space-y-2.5">
                           {studyContent.keyPoints.map((pt, i) => (
                             <li key={i} className="flex items-start gap-2.5 text-sm text-slate-700 dark:text-slate-300">
@@ -1279,8 +1276,8 @@ export default function App() {
                             <thead className="bg-slate-100 dark:bg-slate-800 text-xs uppercase">
                               <tr>
                                 <th className="p-3">פרמטר</th>
-                                <th className="p-3 text-blue-500">היבט / ממצא א׳</th>
-                                <th className="p-3 text-amber-500">היבט / ממצא ב׳</th>
+                                <th className="p-3 text-blue-500">ממצא א׳</th>
+                                <th className="p-3 text-amber-500">ממצא ב׳</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -1300,7 +1297,7 @@ export default function App() {
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/30 space-y-4">
                       <div className="flex items-center gap-2 text-blue-500 font-bold">
                         <HelpCircle size={20} />
-                        <h3>וידוא הבנה (חובה להשלמת המשימה)</h3>
+                        <h3>וידוא הבנה ראשוני (לסימון השלמת המשימה)</h3>
                       </div>
                       <p className="text-sm font-medium">{studyContent.comprehensionCheck.question}</p>
 
@@ -1329,12 +1326,12 @@ export default function App() {
 
                       {isQuizPassed && (
                         <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-500 text-sm font-medium flex items-center justify-between">
-                          <span>מצוין! הבנת את הפרק והמשימה סומנה כהושלמה.</span>
+                          <span>מצוין! סשן זה סומן כהושלם. מומלץ לעבור לתרגול 10 הכרטיסיות ובוחן 10 השאלות.</span>
                           <button
                             onClick={() => setActiveTab('flashcards')}
                             className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700"
                           >
-                            עבור לכרטיסיות שינון
+                            עבור לכרטיסיות
                           </button>
                         </div>
                       )}
@@ -1345,7 +1342,7 @@ export default function App() {
                 {activeTab === 'flashcards' && (
                   <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
                     <div className="flex justify-between items-center">
-                      <h3 className="font-bold text-lg">כרטיסיות שינון מתוך הפרק ({cardIndex + 1} / {studyContent.flashcards.length})</h3>
+                      <h3 className="font-bold text-lg">כרטיסיות שינון (10 כרטיסיות) - {cardIndex + 1} / {studyContent.flashcards.length}</h3>
                       <span className="text-xs bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full font-semibold">
                         נשלטות: {knownCards.length}/{studyContent.flashcards.length}
                       </span>
@@ -1353,10 +1350,10 @@ export default function App() {
 
                     <div
                       onClick={() => setIsFlipped(!isFlipped)}
-                      className="min-h-[240px] rounded-2xl border-2 border-blue-500/30 bg-slate-50 dark:bg-slate-950 p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-500 transition select-none"
+                      className="min-h-[260px] rounded-2xl border-2 border-blue-500/30 bg-slate-50 dark:bg-slate-950 p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-500 transition select-none"
                     >
                       <span className="text-xs uppercase tracking-wider text-blue-500 font-bold mb-3">
-                        {isFlipped ? 'הסבר קליני מלא' : 'מונח / מושג (לחץ להיפוך)'}
+                        {isFlipped ? 'הסבר קליני מלא' : 'מושג / מונח סיעודי (לחץ להיפוך)'}
                       </span>
                       <p className="text-lg font-semibold leading-relaxed">
                         {isFlipped ? studyContent.flashcards[cardIndex].back : studyContent.flashcards[cardIndex].front}
@@ -1391,14 +1388,14 @@ export default function App() {
                 {activeTab === 'quiz' && (
                   <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
                     <div className="flex justify-between items-center">
-                      <h3 className="font-bold text-lg">בוחן אמריקאי מסכם: {activeSession.topic}</h3>
+                      <h3 className="font-bold text-lg">בוחן אמריקאי מסכם (10 שאלות): {activeSession.topic}</h3>
                       <button
                         onClick={regenerateNewQuiz}
                         disabled={isRegeneratingQuiz}
                         className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
                       >
                         <RotateCcw size={14} className={isRegeneratingQuiz ? 'animate-spin' : ''} />
-                        צור בוחן חדש
+                        צור 10 שאלות חדשות
                       </button>
                     </div>
 
@@ -1429,7 +1426,6 @@ export default function App() {
                           })}
                         </div>
 
-                        {/* הצגת הסבר מפורט למה טעית ולמה התשובה נכונה */}
                         {quizSubmitted && (
                           <div className={`p-3.5 rounded-xl text-xs space-y-1 mt-2 ${
                             quizAnswers[qIdx] === item.ans 
@@ -1448,9 +1444,9 @@ export default function App() {
                     {!quizSubmitted ? (
                       <button
                         onClick={() => setQuizSubmitted(true)}
-                        className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition"
+                        className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-lg shadow-blue-600/20"
                       >
-                        הגש בוחן וקבל ניתוח שגיאות
+                        הגש בוחן וקבל ניתוח שגיאות מלא (10 שאלות)
                       </button>
                     ) : (
                       <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex justify-between items-center">
