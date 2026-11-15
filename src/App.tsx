@@ -61,7 +61,7 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-function getSmartCoveredText(text, maxChars = 22000) {
+function getSmartCoveredText(text, maxChars = 25000) {
   if (!text || text.length <= maxChars) return text;
   const partSize = Math.floor(maxChars / 3);
   const start = text.slice(0, partSize);
@@ -73,8 +73,8 @@ function getSmartCoveredText(text, maxChars = 22000) {
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   const models = [
-    { name: 'gemini-3.8-flash', timeout: 12000 },
-    { name: 'gemini-3.5-flash-lite', timeout: 20000 }
+    { name: 'gemini-3.8-flash', timeout: 15000 },
+    { name: 'gemini-3.5-flash-lite', timeout: 25000 }
   ];
   let lastError = null;
 
@@ -141,26 +141,51 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
   return JSON.parse(jsonText);
 }
 
-// יחידת לימוד מורחבת המייצרת 10 כרטיסיות ו-10 שאלות בוחן עמוקות
+// יצירת יחידת לימוד מורחבת המכילה בדיוק 8 כותרות, ותחת כל כותרת לפחות 10 משפטים מפורטים
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
-  const coveredText = getSmartCoveredText(rawTextChunk, 22000);
+  const coveredText = getSmartCoveredText(rawTextChunk, 25000);
 
   const prompt = `מרצה בכיר לסיעוד: בנה יחידת לימוד אקדמית, מקיפה ומעמיקה מאוד בעברית לנושא "${topic}" מתוך טקסט החובה המצורף.
-דרישות חובה:
-1. סיכום קליני עשיר ومفصل (6-8 פסקאות או משפטים מרובים המכסים את כלל ההיבטים הפתופיזיולוגיים והסיעודיים).
-2. לפחות 8 נקודות מפתח קליניות מפורטות.
-3. טבלת השוואה מפורטת.
-4. שאלת "וידוא הבנה" אחת.
-5. בדיוק 10 כרטיסיות שינון מפורטות (flashcards) עם מונחים מתוך הטקסט.
-6. בדיוק 10 שאלות רב-בררותיות בבוחן סוף הפרק (chapterQuiz), כאשר לכל שאלה יש 4 אפשרויות והסבר קליני מפורט מדוע התשובה נכונה ומה משמעות הטעות.
-7. 3 מקרי Code Blue קליניים.
+דרישות קפדניות לשדה הלימוד (sections):
+- עליך לחשוב על ולבנות בדיוק 8 כותרות מרכזיות (sections) המכסות את כלל החומר הקליני והפתופיזיולוגי.
+- תחת כל אחת מה-8 כותרות, שדה התוכן (content) חייב להכיל **לפחות 10 משפטים מלאים, ארוכים ומפורטים** העוסקים ברציונל הרפואי, בפתופיזיולוגיה, בהערכה הסיעודית ובטיפול הקליני. אל תסתפק במשפטים קצרים!
+- בנוסף, ספק 10 כרטיסיות שינון מפורטות, בוחן של בדיוק 10 שאלות עם הסברי שגיאות, ו-3 מקרי Code Blue.
 
 החזר JSON תקין בלבד במבנה הבא:
 {
-  "summary": "סיכום קליני וסיעודי מקיף ומפורט ביותר (מספר פסקאות או משפטים עשירים המכסים את כל החומר)",
-  "keyPoints": [
-    "נקודה מפורטת 1", "נקודה מפורטת 2", "נקודה מפורטת 3", "נקודה מפורטת 4",
-    "נקודה מפורטת 5", "נקודה מפורטת 6", "נקודה מפורטת 7", "נקודה מפורטת 8"
+  "sections": [
+    {
+      "title": "כותרת ראשונה בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף המנתחים את הנושא לעומק ומסבירים את כל ההיבטים הקליניים והסיעודיים..."
+    },
+    {
+      "title": "כותרת שנייה בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    },
+    {
+      "title": "כותרת שלישית בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    },
+    {
+      "title": "כותרת רביעית בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    },
+    {
+      "title": "כותרת חמישית בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    },
+    {
+      "title": "כותרת שישית בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    },
+    {
+      "title": "כותרת שביעית בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    },
+    {
+      "title": "כותרת שמינית בנושא",
+      "content": "כאן יופיע טקסט מפורט ועשיר המורכב מלפחות 10 משפטים מלאים ברצף..."
+    }
   ],
   "comparisonTable": [
     {"param": "פרמטר", "acute": "ממצא א׳", "chronic": "ממצא ב׳"}
@@ -209,12 +234,10 @@ ${coveredText}`;
 }
 
 const getFallbackContent = (topic) => ({
-  summary: `יחידת לימוד מורחבת עבור "${topic}". הזן מפתח Gemini API בהגדרות כדי לקבל 10 כרטיסיות, 10 שאלות בוחן וניתוח מעמיק מהקבצים שלך.`,
-  keyPoints: [
-    'הזנת מפתח API מפעילה ניתוח מלא של החומר.',
-    'מופקים 10 כרטיסיות שינון מפורטות.',
-    'מופק בוחן בן 10 שאלות עם הסברי שגיאות מלאים.'
-  ],
+  sections: Array.from({ length: 8 }, (_, i) => ({
+    title: `כותרת לימוד מספר ${i + 1} בנושא ${topic}`,
+    content: `זהו תוכן הדגמה עבור כותרת ${i + 1}. על מנת שהמערכת תיצור 8 כותרות מפורטות המכילות כל אחת לפחות 10 משפטים קליניים מתוך הקבצים שלך, עליך לחבר מפתח Gemini API חופשי דרך כפתור ההגדרות בראש העמוד. ברגע שהמפתח מחובר, המערכת תבצע ניתוח מעמיק ואמיתי של כל חומר הלימוד שלך ותציג את כל הפירוט הנדרש לשעה שלמה של תרגול סיעודי מעמיק ויסודי.`
+  })),
   comparisonTable: [
     { param: 'סטטוס', acute: 'Demo', chronic: 'AI מלא' }
   ],
@@ -417,7 +440,7 @@ export default function App() {
           const textLen = targetFile.text.length;
           const startIdx = Math.floor(((item.startPercent || 0) / 100) * textLen);
           const endIdx = Math.floor(((item.endPercent || 100) / 100) * textLen);
-          const slice = targetFile.text.slice(startIdx, Math.max(endIdx, startIdx + 3000));
+          const slice = targetFile.text.slice(startIdx, Math.max(endIdx, startIdx + 3500));
 
           return {
             title: item.title,
@@ -582,7 +605,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `היי מתן! טענתי את החומר המלא והמעמיק של "${session.topic}" (סשן של ${session.duration} דקות). אני כאן לכל שאלה קלינית או הסבר!`
+        text: `היי מתן! טענתי את החומר המלא של "${session.topic}" (סשן של ${session.duration} דקות) הכולל 8 כותרות מפורטות. אני כאן לכל שאלה קלינית!`
       }
     ]);
 
@@ -674,7 +697,7 @@ export default function App() {
     try {
       const reply = await callGeminiWithFallback(
         apiKey.trim(),
-        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית ומעמיקה לשאלת הסטודנט על בסיс חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 20000)}\n\nשאלת הסטודנט: ${userMsg}`,
+        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית ומעמיקה לשאלת הסטודנט על בסיס חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 20000)}\n\nשאלת הסטודנט: ${userMsg}`,
         false
       );
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה.' }]);
@@ -1212,8 +1235,8 @@ export default function App() {
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
               <Loader2 size={44} className="text-blue-500 animate-spin" />
-              <h3 className="text-lg font-bold">המרצה הקליני מייצר חומר מעמיק ל-60 דקות...</h3>
-              <p className="text-sm text-slate-400">בונה סיכום מקיף, 10 כרטיסיות שינון ובוחן בן 10 שאלות עם הסברי שגיאות</p>
+              <h3 className="text-lg font-bold">המרצה הקליני מייצר 8 כותרות מפורטות (10+ משפטים לכל כותרת)...</h3>
+              <p className="text-sm text-slate-400">מכין סיכום עשיר, 10 כרטיסיות שינון ובוחן בן 10 שאלות עם ניתוח שגיאות</p>
             </div>
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
@@ -1246,31 +1269,32 @@ export default function App() {
 
                 {activeTab === 'learn' && (
                   <>
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-5">
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6">
                       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
                         <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות למידה</span>
                         <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
                       </div>
 
-                      <div className="space-y-3">
-                        <h3 className="font-semibold text-base text-blue-500">סקירה קלינית וסיעודית מקיפה (תוכן מורחב)</h3>
-                        <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">{studyContent.summary}</p>
-                      </div>
+                      <div className="space-y-6">
+                        <h3 className="font-bold text-lg text-blue-500 border-b border-slate-100 dark:border-slate-800 pb-2">
+                          📚 חומר לימוד מפורט (8 כותרות, 10+ משפטים בכל כותרת)
+                        </h3>
 
-                      <div className="space-y-2">
-                        <h3 className="font-semibold text-base text-blue-500">נקודות מפתח קליניות לבחינה</h3>
-                        <ul className="space-y-2.5">
-                          {studyContent.keyPoints.map((pt, i) => (
-                            <li key={i} className="flex items-start gap-2.5 text-sm text-slate-700 dark:text-slate-300">
-                              <span className="bg-blue-500/10 text-blue-500 font-bold px-2 py-0.5 rounded text-xs mt-0.5">{i + 1}</span>
-                              <span className="leading-relaxed">{pt}</span>
-                            </li>
-                          ))}
-                        </ul>
+                        {studyContent.sections?.map((sec, idx) => (
+                          <div key={idx} className="space-y-2.5 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80">
+                            <h4 className="font-bold text-base text-blue-600 dark:text-blue-400 flex items-center gap-2">
+                              <span className="bg-blue-600 text-white text-xs w-6 h-6 rounded-lg flex items-center justify-center shrink-0">{idx + 1}</span>
+                              {sec.title}
+                            </h4>
+                            <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">
+                              {sec.content}
+                            </p>
+                          </div>
+                        ))}
                       </div>
 
                       {studyContent.comparisonTable?.length > 0 && (
-                        <div className="overflow-x-auto pt-2">
+                        <div className="overflow-x-auto pt-4">
                           <h3 className="font-semibold text-base text-blue-500 mb-2">טבלת השוואה והערכה קלינית</h3>
                           <table className="w-full text-sm text-right border-collapse rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
                             <thead className="bg-slate-100 dark:bg-slate-800 text-xs uppercase">
