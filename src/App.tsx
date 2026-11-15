@@ -74,23 +74,28 @@ function getSmartCoveredText(text, maxChars = 7500) {
   return `${start}\n\n[...המשך הפרק...]\n\n${middle}\n\n[...חלק אחרון של הפרק...]\n\n${end}`;
 }
 
-// פונקציית עזר מהירה וחסינת-עומס ללא ניתוק מוקדם (Abort)
+// פונקציית עזר מהירה: מנסה gemini-3.8-flash עד 8 שניות, ואם עמוס עוברת מיד למודל המהיר gemini-2.5-flash-lite
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  const maxRetries = 3;
+  const models = [
+    { name: 'gemini-3.8-flash', timeout: 8000 },
+    { name: 'gemini-2.5-flash-lite', timeout: 15000 }
+  ];
   let lastError = null;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  for (const m of models) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), m.timeout);
+
     try {
-      const generationConfig = {
-        thinkingConfig: { thinkingLevel: 'LOW' }
-      };
+      const generationConfig = {};
       if (isJson) generationConfig.responseMimeType = 'application/json';
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${m.name}:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig
@@ -103,15 +108,13 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
       return data.candidates[0].content.parts[0].text;
     } catch (err) {
       lastError = err;
-      if (attempt < maxRetries) {
-        await new Promise((res) => setTimeout(res, 1000 * attempt));
-      }
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
   throw lastError;
 }
-
 // 1. מנוע תכנון פדגוגי מהיר מבוסס AI (מחלק קבצים גדולים לתתי-פרקים כדי שלא יחסר חומר)
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
