@@ -82,7 +82,7 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const generationConfig = {
-        thinkingConfig: { thinkingLevel: 'MINIMAL' }
+        thinkingConfig: { thinkingLevel: 'LOW' }
       };
       if (isJson) generationConfig.responseMimeType = 'application/json';
 
