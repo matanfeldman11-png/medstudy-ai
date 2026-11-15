@@ -64,7 +64,7 @@ async function extractTextFromFile(file) {
 }
 
 // פונקציית עזר לדגימה חכמה שמכסה התחלה, אמצע וסוף של סשן ארוך בלי לאבד נושאים
-function getSmartCoveredText(text, maxChars = 8500) {
+function getSmartCoveredText(text, maxChars = 7500) {
   if (!text || text.length <= maxChars) return text;
   const partSize = Math.floor(maxChars / 3);
   const start = text.slice(0, partSize);
@@ -74,26 +74,27 @@ function getSmartCoveredText(text, maxChars = 8500) {
   return `${start}\n\n[...המשך הפרק...]\n\n${middle}\n\n[...חלק אחרון של הפרק...]\n\n${end}`;
 }
 
-// פונקציית עזר חסינת-עומס: מנסה עד 3 פעמים מול gemini-3.8-flash עם השהיה קצרה במקרה של עומס זמני
-async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs = 25000) {
+// פונקציית עזר מהירה וחסינת-עומס ללא ניתוק מוקדם (Abort)
+async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
   const maxRetries = 3;
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
     try {
-      const body = { contents: [{ parts: [{ text: prompt }] }] };
-      if (isJson) body.generationConfig = { responseMimeType: 'application/json' };
+      const generationConfig = {
+        thinkingConfig: { thinkingLevel: 'MINIMAL' }
+      };
+      if (isJson) generationConfig.responseMimeType = 'application/json';
 
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify(body)
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig
+          })
         }
       );
 
@@ -102,17 +103,14 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs =
       return data.candidates[0].content.parts[0].text;
     } catch (err) {
       lastError = err;
-      // אם יש עומס זמני בשרת, ממתין 2 שניות ומנסה שוב אוטומטית
       if (attempt < maxRetries) {
-        await new Promise((res) => setTimeout(res, 2000 * attempt));
+        await new Promise((res) => setTimeout(res, 1000 * attempt));
       }
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
   throw lastError;
-} 
+}
 
 // 1. מנוע תכנון פדגוגי מהיר מבוסס AI (מחלק קבצים גדולים לתתי-פרקים כדי שלא יחסר חומר)
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
@@ -120,7 +118,7 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
     fileIndex: idx,
     fileName: f.name,
     wordCount: f.wordCount,
-    excerpt: f.text.slice(0, 700)
+    excerpt: f.text.slice(0, 600)
   }));
 
   const prompt = `אתה מתכנן תוכניות לימוד ברפואה. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם (אנטומיה/פיזיולוגיה -> פתופיזיולוגיה -> קליניקה/טיפול).
@@ -141,13 +139,13 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
 }
 קבצים: ${JSON.stringify(filesCatalog)}`;
 
-  const jsonText = await callGeminiWithFallback(apiKey, prompt, true, 25000);
+  const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
   return JSON.parse(jsonText);
 }
 
 // 2. יצירת חומר לימוד מובנה המכסה את כל חלקי הסשן (התחלה, אמצע וסוף)
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
-  const coveredText = getSmartCoveredText(rawTextChunk, 8500);
+  const coveredText = getSmartCoveredText(rawTextChunk, 7500);
 
   const prompt = `מרצה לרפואה: בנה יחידת לימוד מקיפה אך תמציתית בעברית לנושא "${topic}" המכסה את כל חלקי הטקסט המצורף.
 החזר JSON תקין בלבד:
@@ -182,7 +180,7 @@ async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
 טקסט:
 ${coveredText}`;
 
-  const jsonText = await callGeminiWithFallback(apiKey, prompt, true, 30000);
+  const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
   return JSON.parse(jsonText);
 }
 
@@ -478,7 +476,7 @@ export default function App() {
         textChunk: s.textChunk,
         duration: sessionDuration,
         completed: false,
-        savedContent: null // כאן יישמר חומר ה-AI לאחר הטעינה הראשונה
+        savedContent: null
       };
     });
 
@@ -572,7 +570,6 @@ export default function App() {
       }
     ]);
 
-    // אם התוכן כבר נוצר ונשמר בעבר -> הצג מיד ללא המתנה!
     if (session.savedContent) {
       setStudyContent(session.savedContent);
       return;
@@ -584,7 +581,6 @@ export default function App() {
         const aiData = await generateAIStudyMaterial(apiKey.trim(), session.topic, session.textChunk);
         setStudyContent(aiData);
 
-        // שמירת התוכן שנוצר בתוך הקורס ב-localStorage לכניסות הבאות
         if (activeCourse) {
           setCourses((prev) =>
             prev.map((course) =>
@@ -632,8 +628,7 @@ export default function App() {
       const reply = await callGeminiWithFallback(
         apiKey.trim(),
         `אתה מורה פרטי לרפואה. ענה בעברית בצורה ברורה ותמציתית לשאלת הסטודנט על בסיס חומר הלימוד הבא:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 15000)}\n\nשאלת הסטודנט: ${userMsg}`,
-        false,
-        20000
+        false
       );
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה, נסה שוב.' }]);
     } catch (err) {
