@@ -72,39 +72,49 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  const modelName = 'gemini-1.5-flash';
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  // מודלים מתקדמים בראש הרשימה, ומודל יציב כגיבוי אחרון בהחלט
+  const models = [
+    { name: 'gemini-2.5-flash', timeout: 45000 },
+    { name: 'gemini-3.5-flash-lite', timeout: 45000 },
+    { name: 'gemini-1.5-flash', timeout: 60000 } // גיבוי אחרון ויציב
+  ];
+  let lastError = null;
 
-  try {
-    const generationConfig = {};
-    if (isJson) generationConfig.responseMimeType = 'application/json';
+  for (const m of models) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), m.timeout);
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig
-        })
-      }
-    );
+    try {
+      const generationConfig = {};
+      if (isJson) generationConfig.responseMimeType = 'application/json';
 
-    const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
-    if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${m.name}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig
+          })
+        }
+      );
+
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
       return data.candidates[0].content.parts[0].text;
+    } catch (err) {
+      lastError = err;
+      // אם המודל הנוכחי עמוס או נכשל, המערכת תעבור אוטומטית למודל הבא ברשימה
+    } finally {
+      clearTimeout(timeoutId);
     }
-    throw new Error('תגובה ריקה מהשרת');
-  } catch (err) {
-    throw new Error(`שגיאה בחיבור ל-AI: ${err.message}`);
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  throw lastError;
 }
+
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
     fileIndex: idx,
