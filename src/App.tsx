@@ -3,7 +3,8 @@ import {
   Upload, Calendar, Clock, BookOpen, Moon, Sun, 
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
-  Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2
+  Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
+  Plus, FolderOpen
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -152,30 +153,38 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
-  // טעינה אוטומטית מהזיכרון המקומי של הדפדפן כדי שהמידע לא יימחק ברענון
-  const [files, setFiles] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('medstudy_files')) || []; } catch { return []; }
-  });
-  const [isParsingFiles, setIsParsingFiles] = useState(false);
-  const [deadline, setDeadline] = useState(() => localStorage.getItem('medstudy_deadline') || '');
-  const [selectedDays, setSelectedDays] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('medstudy_days')) || [0, 2, 4]; } catch { return [0, 2, 4]; }
-  });
-  const [sessionDuration, setSessionDuration] = useState(() => Number(localStorage.getItem('medstudy_duration')) || 45);
-  const [schedule, setSchedule] = useState(() => {
+  // רשימת כל הקורסים השמורים בדפדפן
+  const [courses, setCourses] = useState(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem('medstudy_schedule')) || [];
-      return saved.map((s) => ({ ...s, rawDate: new Date(s.rawDate) }));
-    } catch { return []; }
-  });
-  
-  const [step, setStep] = useState(() => {
-    try {
-      const savedSchedule = JSON.parse(localStorage.getItem('medstudy_schedule')) || [];
-      return savedSchedule.length > 0 ? 2 : 1;
-    } catch { return 1; }
+      const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
+      return saved.map((c) => ({
+        ...c,
+        schedule: (c.schedule || []).map((s) => ({ ...s, rawDate: new Date(s.rawDate) }))
+      }));
+    } catch {
+      return [];
+    }
   });
 
+  const [activeCourseId, setActiveCourseId] = useState(() => localStorage.getItem('medstudy_active_course') || null);
+  const [step, setStep] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
+      return saved.length > 0 ? 0 : 1; // 0 = מסך הקורסים שלי
+    } catch {
+      return 1;
+    }
+  });
+
+  // שדות ליצירת קורס חדש
+  const [courseName, setCourseName] = useState('');
+  const [files, setFiles] = useState([]);
+  const [isParsingFiles, setIsParsingFiles] = useState(false);
+  const [deadline, setDeadline] = useState('');
+  const [selectedDays, setSelectedDays] = useState([0, 2, 4]);
+  const [sessionDuration, setSessionDuration] = useState(45);
+
+  // מצב למידה אקטיבי
   const [activeSession, setActiveSession] = useState(null);
   const [studyContent, setStudyContent] = useState(null);
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -205,18 +214,17 @@ export default function App() {
   const [streak, setStreak] = useState(0);
   const [gameOver, setGameOver] = useState(false);
 
-  // שמירה אוטומטית בדפדפן בכל שינוי בקבצים, בלו"ז או בהגדרות
+  const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
+
+  // שמירה אוטומטית של כל הקורסים בדפדפן
   useEffect(() => {
     try {
-      localStorage.setItem('medstudy_files', JSON.stringify(files));
-      localStorage.setItem('medstudy_deadline', deadline);
-      localStorage.setItem('medstudy_days', JSON.stringify(selectedDays));
-      localStorage.setItem('medstudy_duration', String(sessionDuration));
-      localStorage.setItem('medstudy_schedule', JSON.stringify(schedule));
+      localStorage.setItem('medstudy_courses', JSON.stringify(courses));
+      if (activeCourseId) localStorage.setItem('medstudy_active_course', activeCourseId);
     } catch (e) {
       console.warn('חריגה מנפח האחסון המקומי בדפדפן');
     }
-  }, [files, deadline, selectedDays, sessionDuration, schedule]);
+  }, [courses, activeCourseId]);
 
   useEffect(() => {
     if (!gameStarted || gameOver || activeTab !== 'game') return;
@@ -231,6 +239,16 @@ export default function App() {
   const saveApiKey = (val) => {
     setApiKey(val);
     localStorage.setItem('medstudy_api_key', val);
+  };
+
+  // פתיחת טופס יצירת קורס חדש נקי
+  const openNewCourseForm = () => {
+    setCourseName('');
+    setFiles([]);
+    setDeadline('');
+    setSelectedDays([0, 2, 4]);
+    setSessionDuration(45);
+    setStep(1);
   };
 
   // העלאת קבצים וחילוץ הטקסט האמיתי שלהם
@@ -267,7 +285,7 @@ export default function App() {
     );
   };
 
-  // חלוקת הטקסט האמיתי של הקבצים על פני הסשנים
+  // יצירת קורס חדש ושמירתו ברשימת הקורסים
   const generateSchedule = () => {
     if (files.length === 0 || !deadline || selectedDays.length === 0) {
       alert('אנא העלה לפחות קובץ אחד, בחר דדליין וסמן ימי לימוד.');
@@ -298,7 +316,6 @@ export default function App() {
       return;
     }
 
-    // איחוד כל הטקסט וחלוקתו לחלקים שווים לפי מספר הסשנים
     const combinedText = files.map((f) => `--- קובץ: ${f.name} ---\n${f.text}`).join('\n\n');
     const chunkSize = Math.ceil(combinedText.length / studyDates.length);
 
@@ -319,12 +336,36 @@ export default function App() {
       };
     });
 
-    setSchedule(generatedSessions);
+    const newCourse = {
+      id: 'course-' + Date.now(),
+      title: courseName.trim() || `קורס ${courses.length + 1} (${files[0].name.replace(/\.[^/.]+$/, "")})`,
+      deadline,
+      sessionDuration,
+      filesCount: files.length,
+      schedule: generatedSessions,
+      createdAt: new Date().toLocaleDateString('he-IL')
+    };
+
+    setCourses((prev) => [newCourse, ...prev]);
+    setActiveCourseId(newCourse.id);
     setStep(2);
   };
 
-  // ייצוא משימות ליומן גוגל
+  // מחיקת קורס ספציפי
+  const deleteCourse = (courseId, e) => {
+    e.stopPropagation();
+    if (!confirm('האם למחוק קורס זה לצמיתות?')) return;
+    const updated = courses.filter((c) => c.id !== courseId);
+    setCourses(updated);
+    if (activeCourseId === courseId) {
+      setActiveCourseId(updated[0]?.id || null);
+      setStep(updated.length > 0 ? 0 : 1);
+    }
+  };
+
+  // ייצוא משימות של הקורס הנוכחי ליומן גוגל
   const exportToCalendarTasks = () => {
+    if (!activeCourse) return;
     const formatDateOnly = (dateObj) => {
       const y = dateObj.getFullYear();
       const m = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -340,15 +381,15 @@ export default function App() {
       'METHOD:PUBLISH'
     ];
 
-    schedule.forEach((session) => {
+    activeCourse.schedule.forEach((session) => {
       const dateStr = formatDateOnly(session.rawDate);
       icsContent.push(
         'BEGIN:VEVENT',
-        `UID:event-medstudy-${session.id}-${Date.now()}@medstudy.ai`,
+        `UID:event-medstudy-${activeCourse.id}-${session.id}@medstudy.ai`,
         `DTSTART;VALUE=DATE:${dateStr}`,
         `DTEND;VALUE=DATE:${dateStr}`,
-        `SUMMARY:📚 משימה: ${session.topic} (${session.duration} דק׳)`,
-        `DESCRIPTION:יעד למידה יומי מתוך MedStudy AI.`,
+        `SUMMARY:📚 [${activeCourse.title}] ${session.topic} (${session.duration} דק׳)`,
+        `DESCRIPTION:יעד למידה מתוך MedStudy AI עבור הקורס ${activeCourse.title}.`,
         'END:VEVENT'
       );
     });
@@ -358,7 +399,7 @@ export default function App() {
     const blob = new Blob([icsContent.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.setAttribute('download', 'MedStudy_Tasks.ics');
+    link.setAttribute('download', `${activeCourse.title}_Tasks.ics`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -381,7 +422,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `היי! קראתי את החומר של "${session.topic}". אם משהו לא ברור או שתרצה דוגמה קלינית – פשוט שאל אותי כאן!`
+        text: `היי! קראתי את החומר של "${session.topic}" מתוך הקורס "${activeCourse?.title}". אם משהו לא ברור או שתרצה דוגמה קלינית – פשוט שאל אותי כאן!`
       }
     ]);
 
@@ -445,12 +486,22 @@ export default function App() {
     }
   };
 
+  // סימון משימה כהושלמה בתוך הקורס הפעיל
   const handleCheckUnderstanding = (idx, correctIdx) => {
     setSelectedAnswer(idx);
-    if (idx === correctIdx) {
+    if (idx === correctIdx && activeCourse) {
       setIsQuizPassed(true);
-      setSchedule((prev) =>
-        prev.map((s) => (s.id === activeSession.id ? { ...s, completed: true } : s))
+      setCourses((prev) =>
+        prev.map((course) =>
+          course.id === activeCourse.id
+            ? {
+                ...course,
+                schedule: course.schedule.map((s) =>
+                  s.id === activeSession.id ? { ...s, completed: true } : s
+                )
+              }
+            : course
+        )
       );
     }
   };
@@ -487,7 +538,7 @@ export default function App() {
   return (
     <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen' : 'bg-slate-50 text-slate-900 min-h-screen'}>
       <header className="border-b border-slate-200 dark:border-slate-800 px-6 py-4 flex justify-between items-center sticky top-0 backdrop-blur-md bg-white/80 dark:bg-slate-950/80 z-20">
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep(1)}>
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep(courses.length > 0 ? 0 : 1)}>
           <div className="bg-blue-600 p-2 rounded-xl text-white">
             <BookOpen size={24} />
           </div>
@@ -498,6 +549,15 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-2.5">
+          {courses.length > 0 && step !== 0 && (
+            <button
+              onClick={() => setStep(0)}
+              className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm font-medium flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-900 transition"
+            >
+              <FolderOpen size={16} className="text-blue-500" />
+              <span>הקורסים שלי ({courses.length})</span>
+            </button>
+          )}
           {step === 3 && (
             <button
               onClick={() => setStep(2)}
@@ -560,13 +620,88 @@ export default function App() {
       )}
 
       <main className="max-w-6xl mx-auto p-6">
+        {/* מסך 0: לוח הקורסים שלי (ריבוי קורסים במקביל) */}
+        {step === 0 && (
+          <div className="space-y-6 mt-4">
+            <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
+              <div>
+                <h2 className="text-2xl font-bold">הקורסים שלי</h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  נהל מספר קורסים במקביל, עקוב אחרי ההתקדמות בכל מקצוע או הוסף קורס חדש
+                </p>
+              </div>
+              <button
+                onClick={openNewCourseForm}
+                className="px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold flex items-center gap-2 shadow-lg shadow-blue-600/20 transition"
+              >
+                <Plus size={18} />
+                הוסף קורס חדש
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {courses.map((course) => {
+                const completedCount = course.schedule.filter((s) => s.completed).length;
+                const totalCount = course.schedule.length;
+                const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+                return (
+                  <div
+                    key={course.id}
+                    onClick={() => {
+                      setActiveCourseId(course.id);
+                      setStep(2);
+                    }}
+                    className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-blue-500 transition cursor-pointer flex flex-col justify-between space-y-5 group"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-start gap-2">
+                        <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-500">
+                          דדליין: {new Date(course.deadline).toLocaleDateString('he-IL')}
+                        </span>
+                        <button
+                          onClick={(e) => deleteCourse(course.id, e)}
+                          className="text-slate-400 hover:text-red-500 p-1 rounded-lg transition"
+                          title="מחק קורס"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                      <h3 className="text-lg font-bold group-hover:text-blue-500 transition">{course.title}</h3>
+                      <p className="text-xs text-slate-500">
+                        {course.filesCount} קבצים • {totalCount} סשנים של {course.sessionDuration} דק׳
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-xs font-semibold">
+                        <span className="text-slate-400">התקדמות בקורס</span>
+                        <span className={progress === 100 ? 'text-emerald-500' : 'text-blue-500'}>
+                          {completedCount}/{totalCount} ({progress}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${progress === 100 ? 'bg-emerald-500' : 'bg-blue-600'}`}
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* מסך 1: יצירת קורס חדש */}
         {step === 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4">
             <div className="lg:col-span-6 space-y-6">
               <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                 <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
                   <Upload size={20} className="text-blue-500" />
-                  1. העלאת חומרי לימוד
+                  1. העלאת חומרי לימוד לקורס
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
                   העלה סיכומים, מצגות הרצאות או מאמרים (PDF, PPTX, DOCX, TXT)
@@ -618,11 +753,22 @@ export default function App() {
                 <div>
                   <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
                     <Calendar size={20} className="text-blue-500" />
-                    2. בניית תוכנית למידה
+                    2. הגדרות הקורס ותוכנית הלמידה
                   </h2>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    הגדר את הדדליין, הימים ומשך כל סשן – ואנחנו נחלק את החומר
+                    תן שם לקורס, הגדר דדליין וימים – ואנחנו נחלק את החומר
                   </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2">שם הקורס (למשל: קרדיולוגיה / פרמקולוגיה)</label>
+                  <input
+                    type="text"
+                    value={courseName}
+                    onChange={(e) => setCourseName(e.target.value)}
+                    placeholder="הזן שם לקורס..."
+                    className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
                 </div>
 
                 <div>
@@ -637,7 +783,7 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-medium mb-2">
-                    באילו ימים בשבוע תרצה ללמוד? ({selectedDays.length} פעמים בשבוע)
+                    באילו ימים בשבוע תרצה ללמוד קורס זה? ({selectedDays.length} פעמים בשבוע)
                   </label>
                   <div className="grid grid-cols-7 gap-2">
                     {DAYS_OF_WEEK.map((day) => {
@@ -686,20 +832,24 @@ export default function App() {
                   className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition"
                 >
                   <Sparkles size={20} />
-                  צור תוכנית למידה חכמה
+                  צור תוכנית למידה לקורס
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {step === 2 && (
+        {/* מסך 2: לוח זמנים של קורס ספציפי */}
+        {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
               <div>
-                <h2 className="text-xl font-bold">תוכנית הלמידה שלך מוכנה!</h2>
-                <p className="text-sm text-slate-500 dark:text-slate-400">
-                  {schedule.length} משימות למידה של {sessionDuration} דקות • הושלמו {schedule.filter(s => s.completed).length}/{schedule.length}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold px-2.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500">קורס פעיל</span>
+                  <h2 className="text-xl font-bold">{activeCourse.title}</h2>
+                </div>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                  {activeCourse.schedule.length} משימות למידה של {activeCourse.sessionDuration} דקות • הושלמו {activeCourse.schedule.filter(s => s.completed).length}/{activeCourse.schedule.length}
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">
@@ -708,33 +858,20 @@ export default function App() {
                   className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center gap-2 shadow-sm transition"
                 >
                   <Download size={16} />
-                  הכנס כמשימות ליומן גוגל (.ics)
+                  הכנס משימות ליומן גוגל (.ics)
                 </button>
                 <button
-                  onClick={() => setStep(1)}
-                  className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800"
+                  onClick={openNewCourseForm}
+                  className="px-4 py-2.5 rounded-xl bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 text-sm font-semibold flex items-center gap-1.5 transition"
                 >
-                  ערוך הגדרות
-                </button>
-                <button
-                  onClick={() => {
-                    if (confirm('למחוק את התוכנית והקבצים הנוכחיים ולהתחיל מחדש?')) {
-                      localStorage.removeItem('medstudy_files');
-                      localStorage.removeItem('medstudy_schedule');
-                      setFiles([]);
-                      setSchedule([]);
-                      setStep(1);
-                    }
-                  }}
-                  className="px-4 py-2.5 rounded-xl border border-red-500/40 text-red-500 text-sm font-medium hover:bg-red-500/10"
-                >
-                  התחל קורס חדש
+                  <Plus size={16} />
+                  קורס נוסף
                 </button>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {schedule.map((session) => (
+              {activeCourse.schedule.map((session) => (
                 <div
                   key={session.id}
                   className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition flex items-center justify-between ${
@@ -776,6 +913,7 @@ export default function App() {
           </div>
         )}
 
+        {/* מסך 3: חדר למידה אינטראקטיבי */}
         {step === 3 && activeSession && (
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
@@ -816,7 +954,7 @@ export default function App() {
                   <>
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-5">
                       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
-                        <span className="text-xs font-semibold text-blue-500">משימה #{activeSession.id} • {activeSession.duration} דקות</span>
+                        <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • משימה #{activeSession.id} • {activeSession.duration} דקות</span>
                         <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
                       </div>
 
