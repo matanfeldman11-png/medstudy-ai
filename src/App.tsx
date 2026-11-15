@@ -112,7 +112,7 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs =
   }
 
   throw lastError;
-}  }
+} 
 
   throw lastError;
 }
