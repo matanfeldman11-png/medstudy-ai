@@ -4,7 +4,7 @@ import {
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
   Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
-  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck, User
+  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck, User, History, Target
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -503,6 +503,34 @@ async function generateCodeBlueOnly(apiKey: string, rawTextChunk: string) {
   return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
 }
 
+async function generateWeaknessAnalysis(
+  apiKey: string,
+  mistakes: { question: string; userAnswer: string; correctAnswer: string; rationale?: string }[],
+  lessonBlocks: any[]
+): Promise<string> {
+  if (!mistakes.length) return '';
+
+  const sectionsSummary = (lessonBlocks || [])
+    .map((b: any, idx: number) => `סעיף ${idx + 1}: ${b.title}`)
+    .join('\n');
+
+  if (!apiKey.trim()) {
+    return `זוהו ${mistakes.length} טעויות. מומלץ לחזור על סעיפי השיעור המודרך הרלוונטיים:\n${sectionsSummary}`;
+  }
+
+  const prompt = `אתה מרצה בכיר לסיעוד. סטודנט/ית סיים/ה תרגול וטעה/תה בשאלות הבאות:
+${JSON.stringify(mistakes, null, 2)}
+
+אלו סעיפי השיעור המודרך של הסשן:
+${sectionsSummary}
+
+כתוב המלצת חזרה קצרה, ברורה וממוקדת בעברית (3-5 משפטים או נקודות קצרות):
+1. ציין במפורש אילו סעיפים מתוך השיעור המודרך (לפי מספר סעיף וכותרת) כדאי לחזור עליהם.
+2. הסבר בקצרה מהי הנקודה הקלינית שדורשת חיזוק כדי למנוע טעות דומה במבחן.`;
+
+  return await callGeminiWithFallback(apiKey, prompt, false);
+}
+
 const getFallbackLesson = (topic: string, duration: number) => {
   const cfg = getDurationConfig(duration);
   return {
@@ -563,19 +591,29 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
 
+  // כרטיסיות
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [knownCards, setKnownCards] = useState<number[]>([]);
 
+  // בוחן מסכם + היסטוריה + המלצות חזרה
+  const [activeQuizAttemptIdx, setActiveQuizAttemptIdx] = useState<number>(0);
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
+  const [quizWeaknessFeedback, setQuizWeaknessFeedback] = useState<string>('');
+  const [isAnalyzingQuiz, setIsAnalyzingQuiz] = useState(false);
 
+  // Code Blue + היסטוריה + המלצות חזרה
+  const [activeCodeBlueAttemptIdx, setActiveCodeBlueAttemptIdx] = useState<number>(0);
   const [gameStarted, setGameStarted] = useState(false);
   const [timeLeft, setTimeLeft] = useState(60);
   const [caseIndex, setCaseIndex] = useState(0);
   const [patientStability, setPatientStability] = useState(100);
   const [streak, setStreak] = useState(0);
   const [gameOver, setGameOver] = useState(false);
+  const [codeBlueAnswers, setCodeBlueAnswers] = useState<Record<number, number>>({});
+  const [codeBlueWeaknessFeedback, setCodeBlueWeaknessFeedback] = useState<string>('');
+  const [isAnalyzingCodeBlue, setIsAnalyzingCodeBlue] = useState(false);
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
@@ -616,7 +654,7 @@ export default function App() {
   useEffect(() => {
     if (!gameStarted || gameOver || activeTab !== 'game') return;
     if (timeLeft <= 0) {
-      setGameOver(true);
+      finishCodeBlueRun(codeBlueAnswers, patientStability, streak);
       return;
     }
     const timer = setInterval(() => setTimeLeft((t) => t - 1), 1000);
@@ -929,6 +967,34 @@ export default function App() {
     });
   };
 
+  // סנכרון ניסיון בוחן בהיסטוריה
+  const loadQuizAttemptState = (attempt: any, idx: number) => {
+    setActiveQuizAttemptIdx(idx);
+    setQuizAnswers(attempt.answers || {});
+    setQuizSubmitted(Boolean(attempt.submitted));
+    setQuizWeaknessFeedback(attempt.weaknessFeedback || '');
+  };
+
+  // סנכרון ניסיון Code Blue בהיסטוריה
+  const loadCodeBlueAttemptState = (attempt: any, idx: number) => {
+    setActiveCodeBlueAttemptIdx(idx);
+    setCodeBlueAnswers(attempt.answers || {});
+    setCodeBlueWeaknessFeedback(attempt.weaknessFeedback || '');
+    if (attempt.completed) {
+      setGameStarted(true);
+      setGameOver(true);
+      setPatientStability(attempt.finalStability ?? 100);
+      setStreak(attempt.finalStreak ?? 0);
+    } else {
+      setGameStarted(false);
+      setGameOver(false);
+      setTimeLeft(60);
+      setCaseIndex(0);
+      setPatientStability(100);
+      setStreak(0);
+    }
+  };
+
   const startSession = async (session: any) => {
     setActiveSession(session);
     setActiveTab('learn');
@@ -940,7 +1006,10 @@ export default function App() {
     setKnownCards([]);
     setQuizAnswers({});
     setQuizSubmitted(false);
+    setQuizWeaknessFeedback('');
     setGameStarted(false);
+    setGameOver(false);
+    setCodeBlueWeaknessFeedback('');
     setStep(3);
 
     const cleanName = userName.trim();
@@ -949,12 +1018,48 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). נלמד שלב אחרי שלב — ענה על שאלת הבדיקה בסוף כל הסבר כדי לפתוח את השלב הבא ולשחרר את התרגול.`,
+        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). נלמד שלב אחרי שלב — תוכל לשאול אותי כאן על כל סעיף (למשל: "לא הבנתי את סעיף 1").`,
       },
     ]);
 
     if (session.savedContent?.blocks) {
-      setStudyContent(session.savedContent);
+      let existing = { ...session.savedContent };
+      // מיגרציה לאחור אם קיים בוחן או Code Blue ישן ללא מערך היסטוריה
+      if (!existing.quizAttempts && existing.chapterQuiz) {
+        existing.quizAttempts = [
+          {
+            id: 'quiz-' + Date.now(),
+            createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+            questions: existing.chapterQuiz,
+            answers: {},
+            submitted: false,
+            score: null,
+            weaknessFeedback: '',
+          },
+        ];
+      }
+      if (!existing.codeBlueAttempts && existing.codeBlueCases) {
+        existing.codeBlueAttempts = [
+          {
+            id: 'cb-' + Date.now(),
+            createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+            cases: existing.codeBlueCases,
+            answers: {},
+            completed: false,
+            finalStability: 100,
+            finalStreak: 0,
+            weaknessFeedback: '',
+          },
+        ];
+      }
+
+      setStudyContent(existing);
+      if (existing.quizAttempts?.length > 0) {
+        loadQuizAttemptState(existing.quizAttempts[0], 0);
+      }
+      if (existing.codeBlueAttempts?.length > 0) {
+        loadCodeBlueAttemptState(existing.codeBlueAttempts[0], 0);
+      }
       return;
     }
 
@@ -1006,6 +1111,88 @@ export default function App() {
     }
   };
 
+  const createAndAppendQuizAttempt = async () => {
+    const existingAttempts = studyContent?.quizAttempts || [];
+    if (!apiKey.trim()) {
+      const demoAttempt = {
+        id: 'quiz-' + Date.now(),
+        createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+        questions: [{ q: 'שאלת הדגמה', opts: ['תשובה נכונה', 'מסיח'], ans: 0, explanation: 'הסבר' }],
+        answers: {},
+        submitted: false,
+        score: null,
+        weaknessFeedback: '',
+      };
+      const nextAttempts = [demoAttempt, ...existingAttempts];
+      updateSessionSavedContent(activeSession.id, { quizAttempts: nextAttempts });
+      loadQuizAttemptState(demoAttempt, 0);
+      return;
+    }
+
+    setIsLoadingTabContent(true);
+    try {
+      const quiz = await generateQuizOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
+      const newAttempt = {
+        id: 'quiz-' + Date.now(),
+        createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+        questions: quiz,
+        answers: {},
+        submitted: false,
+        score: null,
+        weaknessFeedback: '',
+      };
+      const nextAttempts = [newAttempt, ...existingAttempts];
+      updateSessionSavedContent(activeSession.id, { quizAttempts: nextAttempts });
+      loadQuizAttemptState(newAttempt, 0);
+    } catch (err: any) {
+      alert('שגיאה ביצירת הבוחן: ' + err.message);
+    } finally {
+      setIsLoadingTabContent(false);
+    }
+  };
+
+  const createAndAppendCodeBlueAttempt = async () => {
+    const existingAttempts = studyContent?.codeBlueAttempts || [];
+    if (!apiKey.trim()) {
+      const demoAttempt = {
+        id: 'cb-' + Date.now(),
+        createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+        cases: [{ scenario: 'תרחיש הדגמה', question: 'מה עושים?', options: ['פעולה נכונה', 'טעות'], correct: 0, rationale: 'הסבר' }],
+        answers: {},
+        completed: false,
+        finalStability: 100,
+        finalStreak: 0,
+        weaknessFeedback: '',
+      };
+      const nextAttempts = [demoAttempt, ...existingAttempts];
+      updateSessionSavedContent(activeSession.id, { codeBlueAttempts: nextAttempts });
+      loadCodeBlueAttemptState(demoAttempt, 0);
+      return;
+    }
+
+    setIsLoadingTabContent(true);
+    try {
+      const cases = await generateCodeBlueOnly(apiKey.trim(), activeSession.textChunk);
+      const newAttempt = {
+        id: 'cb-' + Date.now(),
+        createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+        cases,
+        answers: {},
+        completed: false,
+        finalStability: 100,
+        finalStreak: 0,
+        weaknessFeedback: '',
+      };
+      const nextAttempts = [newAttempt, ...existingAttempts];
+      updateSessionSavedContent(activeSession.id, { codeBlueAttempts: nextAttempts });
+      loadCodeBlueAttemptState(newAttempt, 0);
+    } catch (err: any) {
+      alert('שגיאה ביצירת סימולציית Code Blue: ' + err.message);
+    } finally {
+      setIsLoadingTabContent(false);
+    }
+  };
+
   const handleTabSwitch = async (targetTab: 'learn' | 'flashcards' | 'quiz' | 'game') => {
     if (targetTab !== 'learn' && !isLessonMastered) {
       return;
@@ -1031,40 +1218,12 @@ export default function App() {
       }
     }
 
-    if (targetTab === 'quiz' && !studyContent?.chapterQuiz) {
-      if (!apiKey.trim()) {
-        updateSessionSavedContent(activeSession.id, {
-          chapterQuiz: [{ q: 'שאלת הדגמה', opts: ['תשובה נכונה', 'מסיח'], ans: 0, explanation: 'הסבר' }],
-        });
-        return;
-      }
-      setIsLoadingTabContent(true);
-      try {
-        const quiz = await generateQuizOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
-        updateSessionSavedContent(activeSession.id, { chapterQuiz: quiz });
-      } catch (err: any) {
-        alert('שגיאה ביצירת הבוחן: ' + err.message);
-      } finally {
-        setIsLoadingTabContent(false);
-      }
+    if (targetTab === 'quiz' && (!studyContent?.quizAttempts || studyContent.quizAttempts.length === 0)) {
+      await createAndAppendQuizAttempt();
     }
 
-    if (targetTab === 'game' && !studyContent?.codeBlueCases) {
-      if (!apiKey.trim()) {
-        updateSessionSavedContent(activeSession.id, {
-          codeBlueCases: [{ scenario: 'תרחיש הדגמה', question: 'מה עושים?', options: ['פעולה נכונה', 'טעות'], correct: 0 }],
-        });
-        return;
-      }
-      setIsLoadingTabContent(true);
-      try {
-        const cases = await generateCodeBlueOnly(apiKey.trim(), activeSession.textChunk);
-        updateSessionSavedContent(activeSession.id, { codeBlueCases: cases });
-      } catch (err: any) {
-        alert('שגיאה ביצירת סימולציית Code Blue: ' + err.message);
-      } finally {
-        setIsLoadingTabContent(false);
-      }
+    if (targetTab === 'game' && (!studyContent?.codeBlueAttempts || studyContent.codeBlueAttempts.length === 0)) {
+      await createAndAppendCodeBlueAttempt();
     }
   };
 
@@ -1084,21 +1243,110 @@ export default function App() {
     }
   };
 
-  const regenerateNewQuiz = async () => {
-    if (!apiKey.trim()) return;
-    setIsLoadingTabContent(true);
-    try {
-      const quiz = await generateQuizOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
-      updateSessionSavedContent(activeSession.id, { chapterQuiz: quiz });
-      setQuizAnswers({});
-      setQuizSubmitted(false);
-    } catch (err: any) {
-      alert('שגיאה: ' + err.message);
-    } finally {
-      setIsLoadingTabContent(false);
+  // הגשת בוחן + ניתוח טעויות ושמירה להיסטוריה
+  const handleSubmitQuiz = async () => {
+    const attempts = [...(studyContent?.quizAttempts || [])];
+    const currentAttempt = attempts[activeQuizAttemptIdx];
+    if (!currentAttempt) return;
+
+    const questions = currentAttempt.questions || [];
+    const correctCount = questions.filter((q: any, i: number) => quizAnswers[i] === q.ans).length;
+
+    const mistakes = questions
+      .map((q: any, i: number) => {
+        if (quizAnswers[i] !== q.ans) {
+          return {
+            question: q.q,
+            userAnswer: quizAnswers[i] !== undefined ? q.opts[quizAnswers[i]] : 'לא נענה',
+            correctAnswer: q.opts[q.ans],
+            rationale: q.explanation,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean) as any[];
+
+    setQuizSubmitted(true);
+
+    let feedbackText = '';
+    if (mistakes.length > 0) {
+      setIsAnalyzingQuiz(true);
+      try {
+        feedbackText = await generateWeaknessAnalysis(apiKey.trim(), mistakes, studyContent?.blocks || []);
+      } catch (e) {
+        feedbackText = 'מומלץ לחזור על סעיפי השיעור המודרך הקשורים לשאלות שטעית בהן.';
+      } finally {
+        setIsAnalyzingQuiz(false);
+      }
     }
+
+    setQuizWeaknessFeedback(feedbackText);
+
+    attempts[activeQuizAttemptIdx] = {
+      ...currentAttempt,
+      answers: { ...quizAnswers },
+      submitted: true,
+      score: `${correctCount}/${questions.length}`,
+      weaknessFeedback: feedbackText,
+    };
+
+    updateSessionSavedContent(activeSession.id, { quizAttempts: attempts });
   };
 
+  // סיום Code Blue + ניתוח טעויות ושמירה להיסטוריה
+  const finishCodeBlueRun = async (
+    finalAnswers: Record<number, number>,
+    finalStab: number,
+    finalStrk: number
+  ) => {
+    setGameOver(true);
+    const attempts = [...(studyContent?.codeBlueAttempts || [])];
+    const currentAttempt = attempts[activeCodeBlueAttemptIdx];
+    if (!currentAttempt) return;
+
+    const cases = currentAttempt.cases || [];
+    const mistakes = cases
+      .map((c: any, idx: number) => {
+        const chosen = finalAnswers[idx];
+        if (chosen !== undefined && chosen !== c.correct) {
+          return {
+            question: `${c.scenario} — ${c.question}`,
+            userAnswer: c.options[chosen],
+            correctAnswer: c.options[c.correct],
+            rationale: c.rationale,
+          };
+        }
+        return null;
+      })
+      .filter(Boolean) as any[];
+
+    let feedbackText = '';
+    if (mistakes.length > 0) {
+      setIsAnalyzingCodeBlue(true);
+      try {
+        feedbackText = await generateWeaknessAnalysis(apiKey.trim(), mistakes, studyContent?.blocks || []);
+      } catch (e) {
+        feedbackText = 'מומלץ לחזור על סעיפי השיעור המודרך הרלוונטיים לתרחישים שבהם שגית.';
+      } finally {
+        setIsAnalyzingCodeBlue(false);
+      }
+    }
+
+    setCodeBlueWeaknessFeedback(feedbackText);
+
+    attempts[activeCodeBlueAttemptIdx] = {
+      ...currentAttempt,
+      answers: { ...finalAnswers },
+      completed: true,
+      finalStability: finalStab,
+      finalStreak: finalStrk,
+      weaknessFeedback: feedbackText,
+    };
+
+    updateSessionSavedContent(activeSession.id, { codeBlueAttempts: attempts });
+  };
+
+  // הצ'אט רואה בזמן אמת את כל סעיפי השיעור המודרך
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -1109,7 +1357,7 @@ export default function App() {
     if (!apiKey.trim()) {
       setChatMessages((prev) => [
         ...prev,
-        { role: 'ai', text: 'כדי שאוכל לענות מתוך הקבצים שלך, הזן מפתח Gemini API בהגדרות למעלה.' },
+        { role: 'ai', text: 'כדי שאוכל לענות מתוך הקבצים והסעיפים שלך, הזן מפתח Gemini API בהגדרות למעלה.' },
       ]);
       return;
     }
@@ -1117,11 +1365,27 @@ export default function App() {
     setIsChatLoading(true);
     try {
       const studentContext = userName.trim() ? `שם הסטודנט/ית הוא ${userName.trim()}.` : '';
-      const reply = await callGeminiWithFallback(
-        apiKey.trim(),
-        `אתה מרצה ומדריך קליני בכיר בסיעוד. ${studentContext} ענה בעברית מקצועית וממוקדת לשאלת הסטודנט על בסיס חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 30000)}\n\nשאלת הסטודנט: ${userMsg}`,
-        false
-      );
+      const blocksContext = (studyContent?.blocks || [])
+        .map(
+          (b: any, idx: number) =>
+            `--- סעיף ${idx + 1} (${idx <= unlockedBlockIdx ? 'פתוח כעת מול הסטודנט' : 'טרם נפתח'}): ${b.title} ---\n${b.explanation}`
+        )
+        .join('\n\n');
+
+      const prompt = `אתה מרצה ומדריך קליני בכיר בסיעוד. ${studentContext}
+הסטודנט/ית נמצא/ת כעת בלמידת הנושא "${activeSession.topic}".
+לפניך סעיפי השיעור המודרך המדויקים שמוצגים כעת על המסך של הסטודנט (ממוספרים כסעיף 1, סעיף 2 וכו'):
+
+${blocksContext}
+
+בנוסף, הנה חומר המקור המלא של הסשן:
+${activeSession.textChunk.slice(0, 22000)}
+
+הנחיה: אם הסטודנט שואל על "סעיף 1", "הסעיף השני", "הקטע הזה" או מבקש הסבר נוסף — התייחס ישירות לסעיף המתאים מתוך רשימת הסעיפים שלמעלה והסבר אותו בצורה ברורה, קלינית ומעשית בעברית.
+
+שאלת הסטודנט: ${userMsg}`;
+
+      const reply = await callGeminiWithFallback(apiKey.trim(), prompt, false);
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה.' }]);
     } catch (err) {
       setChatMessages((prev) => [...prev, { role: 'ai', text: 'שגיאת תקשורת מול ה-AI.' }]);
@@ -1137,27 +1401,42 @@ export default function App() {
     setCaseIndex(0);
     setPatientStability(100);
     setStreak(0);
+    setCodeBlueAnswers({});
+    setCodeBlueWeaknessFeedback('');
   };
 
   const handleGameAnswer = (selectedIdx: number, correctIdx: number, totalCases: number) => {
+    const updatedAnswers = { ...codeBlueAnswers, [caseIndex]: selectedIdx };
+    setCodeBlueAnswers(updatedAnswers);
+
+    let nextStreak = streak;
+    let nextStability = patientStability;
+
     if (selectedIdx === correctIdx) {
-      setStreak((s) => s + 1);
-      setPatientStability((p) => Math.min(100, p + 10));
+      nextStreak = streak + 1;
+      nextStability = Math.min(100, patientStability + 10);
+      setStreak(nextStreak);
+      setPatientStability(nextStability);
     } else {
+      nextStreak = 0;
+      nextStability = Math.max(0, patientStability - 35);
       setStreak(0);
-      setPatientStability((p) => {
-        const next = p - 35;
-        if (next <= 0) setGameOver(true);
-        return Math.max(0, next);
-      });
+      setPatientStability(nextStability);
+      if (nextStability <= 0) {
+        finishCodeBlueRun(updatedAnswers, nextStability, nextStreak);
+        return;
+      }
     }
 
     if (caseIndex + 1 < totalCases) {
       setCaseIndex((c) => c + 1);
     } else {
-      setGameOver(true);
+      finishCodeBlueRun(updatedAnswers, nextStability, nextStreak);
     }
   };
+
+  const currentQuizAttempt = studyContent?.quizAttempts?.[activeQuizAttemptIdx];
+  const currentCodeBlueAttempt = studyContent?.codeBlueAttempts?.[activeCodeBlueAttemptIdx];
 
   return (
     <div dir="rtl" className={darkMode ? 'dark bg-slate-950 text-slate-100 min-h-screen flex flex-col' : 'bg-slate-50 text-slate-900 min-h-screen flex flex-col'}>
@@ -1744,8 +2023,8 @@ export default function App() {
                         >
                           <div className="flex items-center justify-between">
                             <h3 className="font-bold text-base text-blue-600 dark:text-blue-400 flex items-center gap-2">
-                              <span className="bg-blue-600 text-white text-xs w-6 h-6 rounded-lg flex items-center justify-center shrink-0">
-                                {bIdx + 1}
+                              <span className="bg-blue-600 text-white text-xs px-2 py-0.5 rounded-lg flex items-center justify-center shrink-0">
+                                סעיף {bIdx + 1}
                               </span>
                               {block.title}
                             </h3>
@@ -1920,90 +2199,156 @@ export default function App() {
                 )}
 
                 {activeTab === 'quiz' && (
-                  isLoadingTabContent || !studyContent.chapterQuiz ? (
+                  isLoadingTabContent || !currentQuizAttempt ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-blue-500 animate-spin" />
                       <p className="text-sm font-semibold">בונה שאלות בחינה קליניות ומערבב אפשרויות...</p>
                     </div>
                   ) : (
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
-                      <div className="flex justify-between items-center">
-                        <h3 className="font-bold text-lg">בוחן אמריקאי ({studyContent.chapterQuiz.length} שאלות)</h3>
-                        <button
-                          onClick={regenerateNewQuiz}
-                          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
-                        >
-                          <RotateCcw size={14} /> שאלות חדשות
-                        </button>
+                    <div className="space-y-5">
+                      <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
+                        <div className="flex flex-wrap justify-between items-center gap-2">
+                          <div>
+                            <h3 className="font-bold text-lg">
+                              בוחן אמריקאי #{(studyContent.quizAttempts?.length || 1) - activeQuizAttemptIdx} ({currentQuizAttempt.questions.length} שאלות)
+                            </h3>
+                            <p className="text-xs text-slate-400">נוצר בשעה {currentQuizAttempt.createdAt}</p>
+                          </div>
+                          <button
+                            onClick={createAndAppendQuizAttempt}
+                            className="text-xs px-3.5 py-2 rounded-xl bg-blue-600 text-white font-semibold hover:bg-blue-700 flex items-center gap-1.5 transition shadow-sm"
+                          >
+                            <Plus size={14} /> צור בוחן חדש
+                          </button>
+                        </div>
+
+                        {currentQuizAttempt.questions.map((item: any, qIdx: number) => (
+                          <div key={qIdx} className="space-y-3 pb-5 border-b border-slate-200 dark:border-slate-800 last:border-0">
+                            <p className="font-semibold text-sm">{qIdx + 1}. {item.q}</p>
+                            <div className="space-y-1.5">
+                              {item.opts.map((opt: string, oIdx: number) => {
+                                const chosen = quizAnswers[qIdx] === oIdx;
+                                const isCorrect = item.ans === oIdx;
+                                let style = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+                                if (quizSubmitted) {
+                                  if (isCorrect) style = 'bg-emerald-500/15 border-emerald-500 text-emerald-500 font-semibold';
+                                  else if (chosen) style = 'bg-red-500/15 border-red-500 text-red-500';
+                                } else if (chosen) {
+                                  style = 'border-blue-500 bg-blue-500/10 text-blue-500';
+                                }
+                                return (
+                                  <button
+                                    key={oIdx}
+                                    disabled={quizSubmitted}
+                                    onClick={() => setQuizAnswers({ ...quizAnswers, [qIdx]: oIdx })}
+                                    className={`w-full text-right p-3 rounded-xl border text-sm transition ${style}`}
+                                  >
+                                    {opt}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {quizSubmitted && (
+                              <div
+                                className={`p-3.5 rounded-xl text-xs space-y-1 mt-2 ${
+                                  quizAnswers[qIdx] === item.ans
+                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                                    : 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30'
+                                }`}
+                              >
+                                <p className="font-bold">
+                                  {quizAnswers[qIdx] === item.ans ? '✓ תשובה נכונה!' : '✗ טעות בתשובה.'}
+                                </p>
+                                <p className="leading-relaxed">
+                                  <strong className="font-semibold">הסבר קליני:</strong> {item.explanation}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+
+                        {!quizSubmitted ? (
+                          <button
+                            onClick={handleSubmitQuiz}
+                            className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-lg shadow-blue-600/20"
+                          >
+                            הגש בוחן וקבל משוב מלא
+                          </button>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex justify-between items-center">
+                              <span className="font-bold text-blue-500">
+                                ציון: {currentQuizAttempt.questions.filter((q: any, i: number) => quizAnswers[i] === q.ans).length} מתוך {currentQuizAttempt.questions.length}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  setQuizAnswers({});
+                                  setQuizSubmitted(false);
+                                  setQuizWeaknessFeedback('');
+                                }}
+                                className="text-xs underline flex items-center gap-1 font-semibold"
+                              >
+                                <RotateCcw size={14} /> פתור שוב בוחן זה
+                              </button>
+                            </div>
+
+                            {isAnalyzingQuiz ? (
+                              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                                <Loader2 size={16} className="animate-spin shrink-0" />
+                                <span>מנתח את הטעויות שלך ומאתר סעיפים מומלצים לחזרה...</span>
+                              </div>
+                            ) : quizWeaknessFeedback && (
+                              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/40 space-y-1.5">
+                                <h4 className="text-xs font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                                  <Target size={15} /> המלצות חזרה אישיות על בסיס הטעויות שלך:
+                                </h4>
+                                <p className="text-xs leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-line">
+                                  {quizWeaknessFeedback}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
 
-                      {studyContent.chapterQuiz.map((item: any, qIdx: number) => (
-                        <div key={qIdx} className="space-y-3 pb-5 border-b border-slate-200 dark:border-slate-800 last:border-0">
-                          <p className="font-semibold text-sm">{qIdx + 1}. {item.q}</p>
-                          <div className="space-y-1.5">
-                            {item.opts.map((opt: string, oIdx: number) => {
-                              const chosen = quizAnswers[qIdx] === oIdx;
-                              const isCorrect = item.ans === oIdx;
-                              let style = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
-                              if (quizSubmitted) {
-                                if (isCorrect) style = 'bg-emerald-500/15 border-emerald-500 text-emerald-500 font-semibold';
-                                else if (chosen) style = 'bg-red-500/15 border-red-500 text-red-500';
-                              } else if (chosen) {
-                                style = 'border-blue-500 bg-blue-500/10 text-blue-500';
-                              }
+                      {studyContent.quizAttempts?.length > 0 && (
+                        <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm">
+                          <h4 className="text-sm font-bold flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                            <History size={16} className="text-blue-500" />
+                            היסטוריית בחנים בסשן זה ({studyContent.quizAttempts.length})
+                          </h4>
+                          <div className="space-y-2">
+                            {studyContent.quizAttempts.map((att: any, idx: number) => {
+                              const num = studyContent.quizAttempts.length - idx;
+                              const isSelected = idx === activeQuizAttemptIdx;
                               return (
                                 <button
-                                  key={oIdx}
-                                  disabled={quizSubmitted}
-                                  onClick={() => setQuizAnswers({ ...quizAnswers, [qIdx]: oIdx })}
-                                  className={`w-full text-right p-3 rounded-xl border text-sm transition ${style}`}
+                                  key={att.id}
+                                  onClick={() => loadQuizAttemptState(att, idx)}
+                                  className={`w-full p-3 rounded-xl border text-right flex items-center justify-between text-xs transition ${
+                                    isSelected
+                                      ? 'border-blue-500 bg-blue-500/10 font-semibold'
+                                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+                                  }`}
                                 >
-                                  {opt}
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-blue-500">בוחן #{num}</span>
+                                    <span className="text-slate-400">• {att.createdAt}</span>
+                                  </div>
+                                  <span
+                                    className={`px-2.5 py-0.5 rounded-full font-bold ${
+                                      att.submitted
+                                        ? 'bg-emerald-500/15 text-emerald-500'
+                                        : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                                    }`}
+                                  >
+                                    {att.submitted ? `ציון: ${att.score}` : 'טרם הוגש'}
+                                  </span>
                                 </button>
                               );
                             })}
                           </div>
-
-                          {quizSubmitted && (
-                            <div
-                              className={`p-3.5 rounded-xl text-xs space-y-1 mt-2 ${
-                                quizAnswers[qIdx] === item.ans
-                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
-                                  : 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30'
-                              }`}
-                            >
-                              <p className="font-bold">
-                                {quizAnswers[qIdx] === item.ans ? '✓ תשובה נכונה!' : '✗ טעות בתשובה.'}
-                              </p>
-                              <p className="leading-relaxed">
-                                <strong className="font-semibold">הסבר קליני:</strong> {item.explanation}
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-
-                      {!quizSubmitted ? (
-                        <button
-                          onClick={() => setQuizSubmitted(true)}
-                          className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-lg shadow-blue-600/20"
-                        >
-                          הגש בוחן וקבל משוב מלא
-                        </button>
-                      ) : (
-                        <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex justify-between items-center">
-                          <span className="font-bold text-blue-500">
-                            ציון: {studyContent.chapterQuiz.filter((q: any, i: number) => quizAnswers[i] === q.ans).length} מתוך {studyContent.chapterQuiz.length}
-                          </span>
-                          <button
-                            onClick={() => {
-                              setQuizAnswers({});
-                              setQuizSubmitted(false);
-                            }}
-                            className="text-xs underline flex items-center gap-1 font-semibold"
-                          >
-                            <RotateCcw size={14} /> נסה שוב
-                          </button>
                         </div>
                       )}
                     </div>
@@ -2011,80 +2356,185 @@ export default function App() {
                 )}
 
                 {activeTab === 'game' && (
-                  isLoadingTabContent || !studyContent.codeBlueCases ? (
+                  isLoadingTabContent || !currentCodeBlueAttempt ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-rose-500 animate-spin" />
                       <p className="text-sm font-semibold">מכין תרחישי חירום קליניים...</p>
                     </div>
                   ) : (
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-rose-500/40 space-y-6 shadow-sm">
-                      {!gameStarted ? (
-                        <div className="text-center py-8 space-y-4">
-                          <div className="bg-rose-500/10 text-rose-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto">
-                            <HeartPulse size={36} />
+                    <div className="space-y-5">
+                      <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-rose-500/40 space-y-6 shadow-sm">
+                        <div className="flex flex-wrap justify-between items-center gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
+                          <div>
+                            <span className="text-xs font-bold text-rose-500">
+                              סימולציית Code Blue #{(studyContent.codeBlueAttempts?.length || 1) - activeCodeBlueAttemptIdx}
+                            </span>
+                            <p className="text-[11px] text-slate-400">נוצר בשעה {currentCodeBlueAttempt.createdAt}</p>
                           </div>
-                          <h3 className="text-2xl font-bold">Code Blue: סימולציית מיון ומחלקה</h3>
-                          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                            קבלת החלטות סיעודיות תחת לחץ זמן על בסיס חומר הלימוד של הפרק!
-                          </p>
                           <button
-                            onClick={startCodeBlueGame}
-                            className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-lg shadow-rose-600/20 transition"
+                            onClick={createAndAppendCodeBlueAttempt}
+                            className="text-xs px-3.5 py-2 rounded-xl bg-rose-600 text-white font-semibold hover:bg-rose-700 flex items-center gap-1.5 transition shadow-sm"
                           >
-                            התחל תרחיש קליני 🚑
+                            <Plus size={14} /> צור Code Blue חדש
                           </button>
                         </div>
-                      ) : gameOver ? (
-                        <div className="text-center py-8 space-y-4">
-                          <h3 className="text-2xl font-bold">
-                            {patientStability > 0 ? 'המטופל יוצב בהצלחה במחלקה! 🎉' : 'המטופל פיתח הידרדרות קלינית ⚠️'}
-                          </h3>
-                          <p className="text-sm text-slate-400">רצף הצלחות: {streak} • יציבות סופית: {patientStability}%</p>
-                          <button
-                            onClick={startCodeBlueGame}
-                            className="px-6 py-3 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl transition"
-                          >
-                            שחק שוב
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="space-y-5">
-                          <div className="flex justify-between items-center bg-slate-100 dark:bg-slate-800 p-3.5 rounded-xl">
-                            <div className="flex items-center gap-2 font-bold text-rose-500">
-                              <Clock size={18} />
-                              <span>{timeLeft} שניות</span>
-                            </div>
-                            <div className="flex items-center gap-2 font-bold text-amber-500">
-                              <Flame size={18} />
-                              <span>רצף: {streak}</span>
-                            </div>
-                            <div className="text-xs font-bold">
-                              מדדים: <span className={patientStability > 50 ? 'text-emerald-500' : 'text-rose-500'}>{patientStability}%</span>
-                            </div>
-                          </div>
 
-                          <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 space-y-2">
-                            <span className="text-xs font-bold text-rose-500 uppercase">תרחיש קליני #{caseIndex + 1}</span>
-                            <p className="text-sm font-medium leading-relaxed">{studyContent.codeBlueCases[caseIndex].scenario}</p>
-                            <p className="text-sm font-bold pt-2">{studyContent.codeBlueCases[caseIndex].question}</p>
+                        {!gameStarted ? (
+                          <div className="text-center py-6 space-y-4">
+                            <div className="bg-rose-500/10 text-rose-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto">
+                              <HeartPulse size={36} />
+                            </div>
+                            <h3 className="text-2xl font-bold">Code Blue: סימולציית מיון ומחלקה</h3>
+                            <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                              קבלת החלטות סיעודיות תחת לחץ זמן על בסיס חומר הלימוד של הפרק!
+                            </p>
+                            <button
+                              onClick={startCodeBlueGame}
+                              className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-lg shadow-rose-600/20 transition"
+                            >
+                              התחל תרחיש קליני 🚑
+                            </button>
                           </div>
-
-                          <div className="space-y-2">
-                            {studyContent.codeBlueCases[caseIndex].options.map((opt: string, idx: number) => (
+                        ) : gameOver ? (
+                          <div className="space-y-5 py-2">
+                            <div className="text-center space-y-3">
+                              <h3 className="text-2xl font-bold">
+                                {patientStability > 0 ? 'המטופל יוצב בהצלחה במחלקה! 🎉' : 'המטופל פיתח הידרדרות קלינית ⚠️'}
+                              </h3>
+                              <p className="text-sm text-slate-400">רצף הצלחות: {streak} • יציבות סופית: {patientStability}%</p>
                               <button
-                                key={idx}
-                                onClick={() =>
-                                  handleGameAnswer(
-                                    idx,
-                                    studyContent.codeBlueCases[caseIndex].correct,
-                                    studyContent.codeBlueCases.length
-                                  )
-                                }
-                                className="w-full text-right p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-rose-500 hover:bg-rose-500/5 text-sm font-medium transition"
+                                onClick={startCodeBlueGame}
+                                className="px-6 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl text-sm transition"
                               >
-                                {opt}
+                                תרגל שוב סימולציה זו
                               </button>
-                            ))}
+                            </div>
+
+                            {isAnalyzingCodeBlue ? (
+                              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
+                                <Loader2 size={16} className="animate-spin shrink-0" />
+                                <span>מנתח את קבלת ההחלטות שלך ומאתר סעיפים מומלצים לחזרה...</span>
+                              </div>
+                            ) : codeBlueWeaknessFeedback && (
+                              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/40 space-y-1.5 text-right">
+                                <h4 className="text-xs font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                                  <Target size={15} /> המלצות חזרה על בסיס הטעויות בסימולציה:
+                                </h4>
+                                <p className="text-xs leading-relaxed text-slate-700 dark:text-slate-200 whitespace-pre-line">
+                                  {codeBlueWeaknessFeedback}
+                                </p>
+                              </div>
+                            )}
+
+                            <div className="space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                              <h4 className="text-xs font-bold text-slate-400">סיכום תרחישי הסימולציה:</h4>
+                              {currentCodeBlueAttempt.cases.map((c: any, idx: number) => {
+                                const chosen = codeBlueAnswers[idx];
+                                const isRight = chosen === c.correct;
+                                return (
+                                  <div
+                                    key={idx}
+                                    className={`p-3.5 rounded-xl border text-xs space-y-1 ${
+                                      chosen === undefined
+                                        ? 'border-slate-200 dark:border-slate-800 opacity-60'
+                                        : isRight
+                                        ? 'bg-emerald-500/10 border-emerald-500/30'
+                                        : 'bg-red-500/10 border-red-500/30'
+                                    }`}
+                                  >
+                                    <p className="font-bold">תרחיש #{idx + 1}: {c.question}</p>
+                                    {chosen !== undefined && (
+                                      <p className={isRight ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
+                                        בחרת: {c.options[chosen]} {isRight ? '✓' : `(הנכון: ${c.options[c.correct]})`}
+                                      </p>
+                                    )}
+                                    {c.rationale && <p className="text-slate-500 dark:text-slate-400">{c.rationale}</p>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-5">
+                            <div className="flex justify-between items-center bg-slate-100 dark:bg-slate-800 p-3.5 rounded-xl">
+                              <div className="flex items-center gap-2 font-bold text-rose-500">
+                                <Clock size={18} />
+                                <span>{timeLeft} שניות</span>
+                              </div>
+                              <div className="flex items-center gap-2 font-bold text-amber-500">
+                                <Flame size={18} />
+                                <span>רצף: {streak}</span>
+                              </div>
+                              <div className="text-xs font-bold">
+                                מדדים: <span className={patientStability > 50 ? 'text-emerald-500' : 'text-rose-500'}>{patientStability}%</span>
+                              </div>
+                            </div>
+
+                            <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 space-y-2">
+                              <span className="text-xs font-bold text-rose-500 uppercase">תרחיש קליני #{caseIndex + 1}</span>
+                              <p className="text-sm font-medium leading-relaxed">{currentCodeBlueAttempt.cases[caseIndex].scenario}</p>
+                              <p className="text-sm font-bold pt-2">{currentCodeBlueAttempt.cases[caseIndex].question}</p>
+                            </div>
+
+                            <div className="space-y-2">
+                              {currentCodeBlueAttempt.cases[caseIndex].options.map((opt: string, idx: number) => (
+                                <button
+                                  key={idx}
+                                  onClick={() =>
+                                    handleGameAnswer(
+                                      idx,
+                                      currentCodeBlueAttempt.cases[caseIndex].correct,
+                                      currentCodeBlueAttempt.cases.length
+                                    )
+                                  }
+                                  className="w-full text-right p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-rose-500 hover:bg-rose-500/5 text-sm font-medium transition"
+                                >
+                                  {opt}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {studyContent.codeBlueAttempts?.length > 0 && (
+                        <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm">
+                          <h4 className="text-sm font-bold flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                            <History size={16} className="text-rose-500" />
+                            היסטוריית סימולציות Code Blue ({studyContent.codeBlueAttempts.length})
+                          </h4>
+                          <div className="space-y-2">
+                            {studyContent.codeBlueAttempts.map((att: any, idx: number) => {
+                              const num = studyContent.codeBlueAttempts.length - idx;
+                              const isSelected = idx === activeCodeBlueAttemptIdx;
+                              return (
+                                <button
+                                  key={att.id}
+                                  onClick={() => loadCodeBlueAttemptState(att, idx)}
+                                  className={`w-full p-3 rounded-xl border text-right flex items-center justify-between text-xs transition ${
+                                    isSelected
+                                      ? 'border-rose-500 bg-rose-500/10 font-semibold'
+                                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800/60'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-rose-500">Code Blue #{num}</span>
+                                    <span className="text-slate-400">• {att.createdAt}</span>
+                                  </div>
+                                  <span
+                                    className={`px-2.5 py-0.5 rounded-full font-bold ${
+                                      att.completed
+                                        ? att.finalStability > 0
+                                          ? 'bg-emerald-500/15 text-emerald-500'
+                                          : 'bg-red-500/15 text-red-500'
+                                        : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                                    }`}
+                                  >
+                                    {att.completed ? `יציבות: ${att.finalStability}%` : 'טרם הושלם'}
+                                  </span>
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -2101,7 +2551,7 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="font-bold text-sm">מרצה קליני (AI Nursing Tutor)</h3>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">מבוסס על מלוא חומר הלימוד של הסשן</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">מכיר את כל סעיפי השיעור המודרך בזמן אמת</p>
                     </div>
                   </div>
 
@@ -2130,7 +2580,7 @@ export default function App() {
                       type="text"
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="בקש הבהרה קלינית או דוגמה נוספת..."
+                      placeholder="לדוגמה: לא הבנתי את סעיף 1, תסביר שוב..."
                       className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
                     />
                     <button
