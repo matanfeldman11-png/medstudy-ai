@@ -5,7 +5,7 @@ import {
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
   Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
   Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck, User, History, Target,
-  Printer, AlertTriangle, RefreshCw, X
+  Printer, AlertTriangle, RefreshCw, X, Search, Volume2, Square, BarChart3
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -655,6 +655,12 @@ export default function App() {
 
   const [pocketSummaryScope, setPocketSummaryScope] = useState<'session' | 'course' | null>(null);
 
+  // חיפוש חכם חוצה-קורס (#4)
+  const [courseSearchQuery, setCourseSearchQuery] = useState('');
+
+  // הקראה קולית (#5 - Audio Mode)
+  const [speakingBlockKey, setSpeakingBlockKey] = useState<string | null>(null);
+
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
   useEffect(() => {
@@ -703,6 +709,44 @@ export default function App() {
     return () => clearInterval(timer);
   }, [gameStarted, gameOver, timeLeft, activeTab]);
 
+  // עצירת הקראה בעת יציאה או מעבר מסך
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [step, activeTab]);
+
+  const stopSpeech = () => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    setSpeakingBlockKey(null);
+  };
+
+  const toggleSpeech = (key: string, textToRead: string) => {
+    if (!('speechSynthesis' in window)) {
+      alert('הדפדפן שלך אינו תומך בהקראה קולית.');
+      return;
+    }
+
+    if (speakingBlockKey === key) {
+      stopSpeech();
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(textToRead);
+    utterance.lang = 'he-IL';
+    utterance.rate = 1.02;
+    utterance.onend = () => setSpeakingBlockKey(null);
+    utterance.onerror = () => setSpeakingBlockKey(null);
+
+    setSpeakingBlockKey(key);
+    window.speechSynthesis.speak(utterance);
+  };
+
   const saveApiKey = (val: string) => {
     setApiKey(val);
     localStorage.setItem('medstudy_api_key', val);
@@ -713,7 +757,6 @@ export default function App() {
     localStorage.setItem('medstudy_user_name', val);
   };
 
-  // הוספת טעויות לבנק הטעויות של הקורס (ללא כפילויות)
   const recordMistakesToCourseBank = (
     newMistakes: {
       source: string;
@@ -756,7 +799,6 @@ export default function App() {
     );
   };
 
-  // ניהול תור חזרות מרווחות בכרטיסיות (Spaced Repetition)
   const addCardToSpacedRepetition = (card: { front: string; back: string }, sessionTopic: string) => {
     if (!activeCourse) return;
     setCourses((prev) =>
@@ -1120,6 +1162,7 @@ export default function App() {
   };
 
   const startSession = async (session: any) => {
+    stopSpeech();
     setActiveSession(session);
     setActiveTab('learn');
     setUnlockedBlockIdx(session.completed ? 999 : 0);
@@ -1338,6 +1381,7 @@ export default function App() {
       return;
     }
 
+    stopSpeech();
     setActiveTab(targetTab);
 
     if (targetTab === 'flashcards' && !studyContent?.flashcards) {
@@ -1432,6 +1476,8 @@ export default function App() {
       answers: { ...quizAnswers },
       submitted: true,
       score: `${correctCount}/${questions.length}`,
+      correctCount,
+      totalCount: questions.length,
       weaknessFeedback: feedbackText,
     };
 
@@ -1496,7 +1542,6 @@ export default function App() {
     updateSessionSavedContent(activeSession.id, { codeBlueAttempts: attempts });
   };
 
-  // יצירת מרתון תיקון טעויות חוצה-קורס
   const handleStartMistakesMarathon = async () => {
     if (!activeCourse || !(activeCourse.mistakesBank?.length > 0)) return;
     setMarathonSubmitted(false);
@@ -1613,10 +1658,137 @@ ${activeSession.textChunk.slice(0, 22000)}
     }
   };
 
+  // חישוב מד מוכנות לבחינה ואנליטיקה לקורס (#3)
+  const getCourseAnalytics = (course: any) => {
+    if (!course) return null;
+    const totalSessions = course.schedule.length;
+    const completedSessions = course.schedule.filter((s: any) => s.completed).length;
+    const completionPct = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0;
+
+    const quizPercentages: number[] = [];
+    const cbPercentages: number[] = [];
+    let weakestSession: { topic: string; mistakesCount: number } | null = null;
+
+    const mistakesByTopic: Record<string, number> = {};
+    (course.mistakesBank || []).forEach((m: any) => {
+      mistakesByTopic[m.sessionTopic] = (mistakesByTopic[m.sessionTopic] || 0) + 1;
+    });
+
+    Object.entries(mistakesByTopic).forEach(([topic, count]) => {
+      if (!weakestSession || count > weakestSession.mistakesCount) {
+        weakestSession = { topic, mistakesCount: count };
+      }
+    });
+
+    course.schedule.forEach((s: any) => {
+      (s.savedContent?.quizAttempts || []).forEach((att: any) => {
+        if (att.submitted && att.score) {
+          const [c, t] = String(att.score).split('/').map(Number);
+          if (t > 0) quizPercentages.push(Math.round((c / t) * 100));
+        }
+      });
+      (s.savedContent?.codeBlueAttempts || []).forEach((att: any) => {
+        if (att.completed) {
+          cbPercentages.push(att.finalStability ?? 0);
+        }
+      });
+    });
+
+    const avgQuiz =
+      quizPercentages.length > 0
+        ? Math.round(quizPercentages.reduce((a, b) => a + b, 0) / quizPercentages.length)
+        : null;
+
+    const avgCodeBlue =
+      cbPercentages.length > 0
+        ? Math.round(cbPercentages.reduce((a, b) => a + b, 0) / cbPercentages.length)
+        : null;
+
+    const openMistakes = (course.mistakesBank || []).length;
+    const mistakePenalty = Math.min(openMistakes * 3, 25);
+
+    const performanceScore =
+      avgQuiz !== null && avgCodeBlue !== null
+        ? Math.round((avgQuiz + avgCodeBlue) / 2)
+        : avgQuiz !== null
+        ? avgQuiz
+        : avgCodeBlue !== null
+        ? avgCodeBlue
+        : completionPct;
+
+    const rawReadiness = Math.round(completionPct * 0.55 + performanceScore * 0.45 - mistakePenalty);
+    const readinessScore = Math.max(0, Math.min(100, rawReadiness));
+
+    return {
+      completionPct,
+      completedSessions,
+      totalSessions,
+      avgQuiz,
+      avgCodeBlue,
+      openMistakes,
+      readinessScore,
+      weakestSession,
+    };
+  };
+
+  // חיפוש חכם חוצה-קורס (#4)
+  const getCourseSearchResults = (course: any, query: string) => {
+    const q = query.trim().toLowerCase();
+    if (!course || q.length < 2) return [];
+
+    const results: {
+      session: any;
+      matchSource: string;
+      snippet: string;
+    }[] = [];
+
+    course.schedule.forEach((sess: any) => {
+      // חיפוש בסעיפי השיעור המודרך אם כבר נוצרו
+      const blocks = sess.savedContent?.blocks || [];
+      let matchedInBlock = false;
+
+      blocks.forEach((b: any, bIdx: number) => {
+        const combined = `${b.title} ${b.explanation}`;
+        const idx = combined.toLowerCase().indexOf(q);
+        if (idx !== -1 && !matchedInBlock) {
+          matchedInBlock = true;
+          const start = Math.max(0, idx - 45);
+          const end = Math.min(combined.length, idx + q.length + 75);
+          results.push({
+            session: sess,
+            matchSource: `סעיף ${bIdx + 1}: ${b.title}`,
+            snippet: (start > 0 ? '...' : '') + combined.slice(start, end) + (end < combined.length ? '...' : ''),
+          });
+        }
+      });
+
+      // חיפוש בטקסט המקור המלא של הסשן
+      if (!matchedInBlock && sess.textChunk) {
+        const rawIdx = sess.textChunk.toLowerCase().indexOf(q);
+        if (rawIdx !== -1) {
+          const start = Math.max(0, rawIdx - 45);
+          const end = Math.min(sess.textChunk.length, rawIdx + q.length + 75);
+          results.push({
+            session: sess,
+            matchSource: 'חומר מקור (מצגת / קובץ)',
+            snippet:
+              (start > 0 ? '...' : '') +
+              sess.textChunk.slice(start, end).replace(/\s+/g, ' ') +
+              (end < sess.textChunk.length ? '...' : ''),
+          });
+        }
+      }
+    });
+
+    return results;
+  };
+
   const currentQuizAttempt = studyContent?.quizAttempts?.[activeQuizAttemptIdx];
   const currentCodeBlueAttempt = studyContent?.codeBlueAttempts?.[activeCodeBlueAttemptIdx];
   const courseReviewCards = activeCourse?.reviewCardsBank || [];
   const courseMistakes = activeCourse?.mistakesBank || [];
+  const courseAnalytics = activeCourse ? getCourseAnalytics(activeCourse) : null;
+  const searchResults = activeCourse ? getCourseSearchResults(activeCourse, courseSearchQuery) : [];
 
   // תצוגת סיכום כיס להדפסה (PDF)
   if (pocketSummaryScope && activeCourse) {
@@ -1747,7 +1919,10 @@ ${activeSession.textChunk.slice(0, 22000)}
           )}
           {step === 3 && (
             <button
-              onClick={() => setStep(2)}
+              onClick={() => {
+                stopSpeech();
+                setStep(2);
+              }}
               className="px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-800 text-sm font-medium flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-900 transition"
             >
               <ArrowRight size={16} />
@@ -1968,7 +2143,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
                   <ShieldCheck size={15} className="text-emerald-500" />
-                  אחסון מורחב פעיל (IndexedDB) — כולל מעקב טעויות וחזרות מרווחות
+                  אחסון מורחב פעיל (IndexedDB) — כולל מעקב מוכנות לבחינה, טעויות וחזרות מרווחות
                 </p>
               </div>
               <button
@@ -1982,15 +2157,14 @@ ${activeSession.textChunk.slice(0, 22000)}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {courses.map((course) => {
-                const completedCount = course.schedule.filter((s: any) => s.completed).length;
-                const totalCount = course.schedule.length;
-                const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+                const analytics = getCourseAnalytics(course);
 
                 return (
                   <div
                     key={course.id}
                     onClick={() => {
                       setActiveCourseId(course.id);
+                      setCourseSearchQuery('');
                       setStep(2);
                     }}
                     className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-blue-500 transition cursor-pointer flex flex-col justify-between space-y-5 group shadow-sm"
@@ -2009,7 +2183,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                       </div>
                       <h3 className="text-lg font-bold group-hover:text-blue-500 transition">{course.title}</h3>
                       <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {course.filesCount} קבצים • {totalCount} סשנים של {course.sessionDuration} דק׳
+                        {course.filesCount} קבצים • {analytics?.totalSessions} סשנים של {course.sessionDuration} דק׳
                       </p>
                       {(course.mistakesBank?.length > 0 || course.reviewCardsBank?.length > 0) && (
                         <div className="flex flex-wrap gap-1.5 pt-1">
@@ -2029,15 +2203,25 @@ ${activeSession.textChunk.slice(0, 22000)}
 
                     <div className="space-y-2">
                       <div className="flex justify-between text-xs font-semibold">
-                        <span className="text-slate-400">התקדמות בקורס</span>
-                        <span className={progress === 100 ? 'text-emerald-500' : 'text-blue-500'}>
-                          {completedCount}/{totalCount} ({progress}%)
+                        <span className="text-slate-400">מוכנות לבחינה</span>
+                        <span
+                          className={
+                            (analytics?.readinessScore || 0) >= 80
+                              ? 'text-emerald-500'
+                              : (analytics?.readinessScore || 0) >= 50
+                              ? 'text-blue-500'
+                              : 'text-amber-500'
+                          }
+                        >
+                          {analytics?.readinessScore || 0}% ({analytics?.completedSessions}/{analytics?.totalSessions} סשנים)
                         </span>
                       </div>
                       <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                         <div
-                          className={`h-full transition-all duration-300 ${progress === 100 ? 'bg-emerald-500' : 'bg-blue-600'}`}
-                          style={{ width: `${progress}%` }}
+                          className={`h-full transition-all duration-300 ${
+                            (analytics?.readinessScore || 0) >= 80 ? 'bg-emerald-500' : 'bg-blue-600'
+                          }`}
+                          style={{ width: `${analytics?.readinessScore || 0}%` }}
                         />
                       </div>
                     </div>
@@ -2310,6 +2494,7 @@ ${activeSession.textChunk.slice(0, 22000)}
 
         {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
+            {/* כרטיס כותרת + פעולות */}
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div className="space-y-1 max-w-2xl">
                 <div className="flex items-center gap-2">
@@ -2317,7 +2502,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                   <h2 className="text-xl font-bold">{activeCourse.title}</h2>
                 </div>
                 <p className="text-sm text-slate-500 dark:text-slate-400">
-                  {activeCourse.schedule.length} משימות למידה • הושלמו {activeCourse.schedule.filter((s: any) => s.completed).length}/{activeCourse.schedule.length}
+                  דדליין לבחינה: {new Date(activeCourse.deadline).toLocaleDateString('he-IL')} • {activeCourse.filesCount} קבצים
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -2354,6 +2539,120 @@ ${activeSession.textChunk.slice(0, 22000)}
               </div>
             </div>
 
+            {/* מד מוכנות לבחינה ואנליטיקה (#3) */}
+            {courseAnalytics && (
+              <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold flex items-center gap-2 text-slate-800 dark:text-slate-100">
+                    <BarChart3 size={18} className="text-blue-500" />
+                    מד מוכנות לבחינה ואנליטיקה קלינית
+                  </h3>
+                  {courseAnalytics.weakestSession && (
+                    <span className="text-xs px-3 py-1 rounded-full bg-rose-500/10 text-rose-500 font-semibold">
+                      מוקד לחיזוק: "{courseAnalytics.weakestSession.topic}" ({courseAnalytics.weakestSession.mistakesCount} טעויות)
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <p className="text-xs text-slate-400">ציון מוכנות משוקלל</p>
+                    <p
+                      className={`text-2xl font-extrabold mt-1 ${
+                        courseAnalytics.readinessScore >= 80
+                          ? 'text-emerald-500'
+                          : courseAnalytics.readinessScore >= 50
+                          ? 'text-blue-500'
+                          : 'text-amber-500'
+                      }`}
+                    >
+                      {courseAnalytics.readinessScore}%
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <p className="text-xs text-slate-400">התקדמות בסילבוס</p>
+                    <p className="text-2xl font-extrabold mt-1 text-slate-800 dark:text-slate-100">
+                      {courseAnalytics.completedSessions}/{courseAnalytics.totalSessions}
+                      <span className="text-xs font-normal text-slate-400 mr-1">({courseAnalytics.completionPct}%)</span>
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <p className="text-xs text-slate-400">ממוצע בחנים / Code Blue</p>
+                    <p className="text-2xl font-extrabold mt-1 text-blue-500">
+                      {courseAnalytics.avgQuiz !== null ? `${courseAnalytics.avgQuiz}%` : '—'}
+                      {courseAnalytics.avgCodeBlue !== null && (
+                        <span className="text-xs font-semibold text-rose-500 mr-2">
+                          (CB: {courseAnalytics.avgCodeBlue}%)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                    <p className="text-xs text-slate-400">טעויות פתוחות לתיקון</p>
+                    <p className={`text-2xl font-extrabold mt-1 ${courseAnalytics.openMistakes > 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                      {courseAnalytics.openMistakes}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* חיפוש חכם חוצה-קורס (#4 - Global Clinical Search) */}
+            <div className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+              <div className="relative flex items-center">
+                <Search size={18} className="text-slate-400 absolute right-3.5 pointer-events-none" />
+                <input
+                  type="text"
+                  value={courseSearchQuery}
+                  onChange={(e) => setCourseSearchQuery(e.target.value)}
+                  placeholder="חיפוש מהיר בכל הקורס (לדוגמה: דיגוקסין, היפרקלמיה, בצקת ריאות, מינון...)"
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl pr-10 pl-10 py-2.5 text-sm outline-none focus:border-blue-500"
+                />
+                {courseSearchQuery && (
+                  <button
+                    onClick={() => setCourseSearchQuery('')}
+                    className="absolute left-3 text-slate-400 hover:text-slate-600"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+
+              {courseSearchQuery.trim().length >= 2 && (
+                <div className="space-y-2 pt-1">
+                  <p className="text-xs font-semibold text-slate-400">
+                    נמצאו {searchResults.length} התאמות עבור "{courseSearchQuery}":
+                  </p>
+                  {searchResults.length === 0 ? (
+                    <p className="text-xs text-slate-500 py-2">לא נמצאו תוצאות תואמות בחומרי הקורס.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto">
+                      {searchResults.map((res, rIdx) => (
+                        <button
+                          key={rIdx}
+                          onClick={() => startSession(res.session)}
+                          className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 hover:border-blue-500 text-right space-y-1 transition"
+                        >
+                          <div className="flex justify-between items-center text-[11px] font-bold text-blue-500">
+                            <span>
+                              שלב #{res.session.id}: {res.session.topic}
+                            </span>
+                            <span>קפוץ לשיעור ←</span>
+                          </div>
+                          <p className="text-[11px] font-semibold text-emerald-500">{res.matchSource}</p>
+                          <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">{res.snippet}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* רשימת סשנים */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {activeCourse.schedule.map((session: any) => (
                 <div
@@ -2521,13 +2820,34 @@ ${activeSession.textChunk.slice(0, 22000)}
                           </span>
                         </div>
                       </div>
-                      <button
-                        onClick={() => setPocketSummaryScope('session')}
-                        className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5 transition"
-                      >
-                        <Printer size={15} />
-                        סיכום כיס להדפסה (PDF)
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        {/* הקראת כל הסעיפים הפתוחים ברצף (#5) */}
+                        <button
+                          onClick={() => {
+                            const openBlocks = (studyContent.blocks || []).filter((_: any, i: number) => i <= unlockedBlockIdx);
+                            const fullText = openBlocks
+                              .map((b: any, i: number) => `סעיף ${i + 1}. ${b.title}. ${b.explanation}`)
+                              .join(' ... ');
+                            toggleSpeech('all-open', fullText);
+                          }}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${
+                            speakingBlockKey === 'all-open'
+                              ? 'bg-rose-600 text-white'
+                              : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'
+                          }`}
+                        >
+                          {speakingBlockKey === 'all-open' ? <Square size={14} /> : <Volume2 size={15} />}
+                          <span>{speakingBlockKey === 'all-open' ? 'עצור הקראה' : 'האזן לשיעור'}</span>
+                        </button>
+
+                        <button
+                          onClick={() => setPocketSummaryScope('session')}
+                          className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5 transition"
+                        >
+                          <Printer size={15} />
+                          סיכום כיס (PDF)
+                        </button>
+                      </div>
                     </div>
 
                     {studyContent.blocks?.map((block: any, bIdx: number) => {
@@ -2536,6 +2856,7 @@ ${activeSession.textChunk.slice(0, 22000)}
                       const chosenOpt = blockAnswers[bIdx];
                       const hasAnswered = chosenOpt !== undefined;
                       const isCorrect = chosenOpt === block.correctIndex;
+                      const blockSpeechKey = `block-${bIdx}`;
 
                       return (
                         <div
@@ -2546,18 +2867,34 @@ ${activeSession.textChunk.slice(0, 22000)}
                               : 'border-blue-500/40'
                           }`}
                         >
-                          <div className="flex items-center justify-between">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
                             <h3 className="font-bold text-base text-blue-600 dark:text-blue-400 flex items-center gap-2">
                               <span className="bg-blue-600 text-white text-xs px-2 py-0.5 rounded-lg flex items-center justify-center shrink-0">
                                 סעיף {bIdx + 1}
                               </span>
                               {block.title}
                             </h3>
-                            {(isCorrect || isLessonMastered) && (
-                              <span className="text-xs font-bold text-emerald-500 flex items-center gap-1">
-                                <CheckCircle2 size={15} /> הובן
-                              </span>
-                            )}
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() =>
+                                  toggleSpeech(blockSpeechKey, `סעיף ${bIdx + 1}. ${block.title}. ${block.explanation}`)
+                                }
+                                className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition ${
+                                  speakingBlockKey === blockSpeechKey
+                                    ? 'bg-rose-600 text-white'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-blue-500/10 hover:text-blue-500'
+                                }`}
+                                title="הקרא סעיף זה בקול"
+                              >
+                                {speakingBlockKey === blockSpeechKey ? <Square size={13} /> : <Volume2 size={14} />}
+                                <span>{speakingBlockKey === blockSpeechKey ? 'עצור' : 'האזן'}</span>
+                              </button>
+                              {(isCorrect || isLessonMastered) && (
+                                <span className="text-xs font-bold text-emerald-500 flex items-center gap-1">
+                                  <CheckCircle2 size={15} /> הובן
+                                </span>
+                              )}
+                            </div>
                           </div>
 
                           <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">
