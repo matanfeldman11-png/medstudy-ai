@@ -72,47 +72,43 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  // מודלים מתקדמים בראש הרשימה, ומודל יציב כגיבוי אחרון בהחלט
-  const models = [
-    { name: 'gemini-2.5-flash', timeout: 45000 },
-    { name: 'gemini-3.5-flash-lite', timeout: 45000 },
-    { name: 'gemini-1.5-flash', timeout: 60000 } // גיבוי אחרון ויציב
-  ];
-  let lastError = null;
+  const modelName = 'gemini-1.5-flash';
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-  for (const m of models) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), m.timeout);
+  try {
+    const generationConfig = {};
+    if (isJson) generationConfig.responseMimeType = 'application/json';
 
-    try {
-      const generationConfig = {};
-      if (isJson) generationConfig.responseMimeType = 'application/json';
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig
+        })
+      }
+    );
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${m.name}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig
-          })
-        }
-      );
-
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message);
-      return data.candidates[0].content.parts[0].text;
-    } catch (err) {
-      lastError = err;
-      // אם המודל הנוכחי עמוס או נכשל, המערכת תעבור אוטומטית למודל הבא ברשימה
-    } finally {
-      clearTimeout(timeoutId);
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+      let rawText = data.candidates[0].content.parts[0].text;
+      if (isJson) {
+        // ניקוי עטיפות Markdown של JSON במידה והמודל הוסיף אותן
+        rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+      }
+      return rawText;
     }
+    throw new Error('תגובה ריקה מהשרת');
+  } catch (err) {
+    throw new Error(`שגיאה בחיבור ל-AI: ${err.message}`);
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  throw lastError;
 }
 
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
@@ -124,7 +120,7 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
   }));
 
   const prompt = `אתה מרצה בכיר לסיעוד. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם.
-החזר JSON תקין בלבד:
+החזר JSON תקין בלבד במבנה הבא (ללא טקסט נוסף):
 {
   "pedagogicalStrategy": "סקירה קצרה של סדר הלימוד",
   "sessions": [
@@ -148,12 +144,12 @@ async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
   const coveredText = getSmartCoveredText(rawTextChunk, 25000);
 
   const prompt = `מרצה בכיר לסיעוד: בנה יחידת לימוד אקדמית, מקיפה ומעמיקה מאוד בעברית לנושא "${topic}" מתוך טקסט החובה המצורף.
-דרישות קפדניות לשדה הלימוד (sections):
+דרישות קפדניות:
 - עליך לחשוב על ולבנות בדיוק 8 כותרות מרכזיות (sections) המכסות את כלל החומר הקליני והפתופיזיולוגי.
 - תחת כל אחת מה-8 כותרות, שדה התוכן (content) חייב להכיל **לפחות 10 משפטים מלאים, ארוכים ומפורטים** העוסקים ברציונל הרפואי, בפתופיזיולוגיה, בהערכה הסיעודית ובטיפול הקליני.
 - בנוסף, ספק 10 כרטיסיות שינון מפורטות, בוחן של בדיוק 10 שאלות עם הסברי שגיאות, ו-3 מקרי Code Blue.
 
-החזר JSON תקין בלבד במבנה הבא:
+החזר JSON תקין בלבד במבנה הבא (ללא שום טקסט נוסף לפני או אחרי):
 {
   "sections": [
     { "title": "כותרת 1", "content": "10 משפטים מלאים ומפורטים..." },
@@ -632,7 +628,7 @@ export default function App() {
     setIsRegeneratingCards(true);
     try {
       const freshCardsPrompt = `צור 10 כרטיסיות שינון קליניות חדשות (flashcards) בעברית אך ורק מתוך טקסט החומר הבא.
-החזר JSON תקין בלבד במבנה מערך:
+החזר JSON תקין בלבד במבנה מערך (ללא טקסט נוסף):
 [
   {"id": 1, "front": "מושג חדש 1", "back": "הסבר מפורט 1"},
   {"id": 2, "front": "מושג חדש 2", "back": "הסבר מפורט 2"},
@@ -683,7 +679,7 @@ export default function App() {
     setIsRegeneratingQuiz(true);
     try {
       const freshQuizPrompt = `צור בוחן חדש בן 10 שאלות קליניות רב-בררותיות בעברית אך ורק מתוך טקסט החומר הבא. לכל שאלה 4 אפשרויות והסבר קליני מפורט למה התשובה נכונה ומה משמעות השגיאה.
-החזר JSON תקין בלבד במבנה מערך:
+החזר JSON תקין בלבד במבנה מערך (ללא טקסט נוסף):
 [
   {
     "q": "שאלה קלינית",
