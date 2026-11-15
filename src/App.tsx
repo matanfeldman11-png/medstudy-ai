@@ -72,10 +72,11 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
+  // מודלים מתקדמים בראש הרשימה, ומודל יציב כגיבוי אחרון בהחלט
   const models = [
     { name: 'gemini-2.5-flash', timeout: 45000 },
-    { name: 'gemini-1.5-flash', timeout: 45000 },
-    { name: 'gemini-3.5-flash-lite', timeout: 45000 }
+    { name: 'gemini-3.5-flash-lite', timeout: 45000 },
+    { name: 'gemini-1.5-flash', timeout: 60000 } // גיבוי אחרון ויציב
   ];
   let lastError = null;
 
@@ -105,6 +106,7 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
       return data.candidates[0].content.parts[0].text;
     } catch (err) {
       lastError = err;
+      // אם המודל הנוכחי עמוס או נכשל, המערכת תעבור אוטומטית למודל הבא ברשימה
     } finally {
       clearTimeout(timeoutId);
     }
