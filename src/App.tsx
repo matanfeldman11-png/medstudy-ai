@@ -74,6 +74,43 @@ function getSmartCoveredText(text, maxChars = 8500) {
   return `${start}\n\n[...המשך הפרק...]\n\n${middle}\n\n[...חלק אחרון של הפרק...]\n\n${end}`;
 }
 
+// פונקציית עזר חסינת-עומס: מנסה מודל ראשי, ואם יש עומס עובר אוטומטית למודל גיבוי
+async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs = 25000) {
+  const models = ['gemini-3.8-flash', 'gemini-2.5-flash'];
+  let lastError = null;
+
+  for (const model of models) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const body = { contents: [{ parts: [{ text: prompt }] }] };
+      if (isJson) body.generationConfig = { responseMimeType: 'application/json' };
+
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify(body)
+        }
+      );
+
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message);
+      return data.candidates[0].content.parts[0].text;
+    } catch (err) {
+      lastError = err;
+      // אם יש עומס בשרתים או שגיאה זמנית, עובר אוטומטית למודל הבא ברשימה
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  throw lastError;
+}
+
 // 1. מנוע תכנון פדגוגי מהיר מבוסס AI (מחלק קבצים גדולים לתתי-פרקים כדי שלא יחסר חומר)
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
   const filesCatalog = files.map((f, idx) => ({
@@ -101,29 +138,8 @@ async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDur
 }
 קבצים: ${JSON.stringify(filesCatalog)}`;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000);
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: 'application/json' }
-        })
-      }
-    );
-
-    const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
-    return JSON.parse(data.candidates[0].content.parts[0].text);
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  const jsonText = await callGeminiWithFallback(apiKey, prompt, true, 25000);
+  return JSON.parse(jsonText);
 }
 
 // 2. יצירת חומר לימוד מובנה המכסה את כל חלקי הסשן (התחלה, אמצע וסוף)
@@ -163,31 +179,10 @@ async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
 טקסט:
 ${coveredText}`;
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { responseMimeType: 'application/json' }
-        })
-      }
-    );
-
-    const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
-    const jsonText = data.candidates[0].content.parts[0].text;
-    return JSON.parse(jsonText);
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  const jsonText = await callGeminiWithFallback(apiKey, prompt, true, 30000);
+  return JSON.parse(jsonText);
 }
+
 // נתוני גיבוי למקרה שלא הוזן מפתח API
 const getFallbackContent = (topic) => ({
   summary: `מצב הדגמה עבור "${topic}". כדי שהמערכת תנתח את הטקסט האמיתי מהקבצים שהעלית, לחץ על כפתור ההגדרות למעלה והזן מפתח Gemini API חינמי.`,
@@ -631,23 +626,13 @@ export default function App() {
 
     setIsChatLoading(true);
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey.trim()}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{
-                text: `אתה מורה פרטי לרפואה. ענה בעברית בצורה ברורה ותמציתית לשאלת הסטודנט על בסיס חומר הלימוד הבא:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 8000)}\n\nשאלת הסטודנט: ${userMsg}`
-              }]
-            }]
-          })
-        }
+      const reply = await callGeminiWithFallback(
+        apiKey.trim(),
+        `אתה מורה פרטי לרפואה. ענה בעברית בצורה ברורה ותמציתית לשאלת הסטודנט על בסיס חומר הלימוד הבא:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 15000)}\n\nשאלת הסטודנט: ${userMsg}`,
+        false,
+        20000
       );
-      const data = await response.json();
-      const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'לא הצלחתי לנסח תשובה, נסה שוב.';
-      setChatMessages((prev) => [...prev, { role: 'ai', text: reply }]);
+      setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה, נסה שוב.' }]);
     } catch (err) {
       setChatMessages((prev) => [...prev, { role: 'ai', text: 'שגיאת תקשורת מול ה-AI.' }]);
     } finally {
