@@ -4,7 +4,7 @@ import {
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
   Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
-  Plus, FolderOpen
+  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -23,7 +23,7 @@ const DAYS_OF_WEEK = [
   { id: 6, label: 'ש׳', full: 'שבת' },
 ];
 
-// פונקציה לחילוץ טקסט אמיתי מכל סוגי הקבצים
+// חילוץ טקסט אמיתי מכל סוגי הקבצים
 async function extractTextFromFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   const arrayBuffer = await file.arrayBuffer();
@@ -63,7 +63,59 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-// קריאה ל-Gemini API ליצירת חומר לימוד מובנה מתוך הטקסט שהועלה
+// 1. מנוע תכנון פדגוגי מבוסס AI: מסדר את הקבצים מהבסיס למתקדם ומחלק לסשנים חכמים
+async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
+  const filesCatalog = files.map((f, idx) => ({
+    fileIndex: idx,
+    fileName: f.name,
+    wordCount: f.wordCount,
+    excerpt: f.text.slice(0, 3500) // דגימה מייצגת מתוכן הקובץ לזיהוי הנושא ורמת הבסיסיות
+  }));
+
+  const prompt = `אתה דיקן ומתכנן תוכניות לימודים בכיר בפקולטה לרפואה.
+קיבלת ${files.length} קבצי לימוד ויש לך בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות עד המבחן.
+
+משימתך:
+1. לנתח את התוכן של כל קובץ ולסדר את הלמידה בסדר הפדגוגי הנכון ביותר להבנה עמוקה: מהבסיס אל המורכב (קודם אנטומיה/פיזיולוגיה/מושגי יסוד, אחר כך פתופיזיולוגיה ומנגנונים, ולבסוף קליניקה, אבחנה מבדלת, פרמקולוגיה וטיפול).
+2. לחלק את החומר על פני בדיוק ${totalSessionsCount} סשנים לפי מורכבות ואורך החומר (קובץ ארוך או מורכב יקבל יותר מסשן אחד עם חלוקה ברורה לחלקים, וקבצים קצרים יכולים להיות בסשן אחד).
+3. לכל סשן לציין באיזה אחוז מתוך הקובץ להתמקד (startPercent עד endPercent מ-0 עד 100) ונימוק קצר למה הוא ממוקם בשלב הזה.
+
+החזר תשובה אך ורק בפורמט JSON תקין (ללא markdown) במבנה הבא:
+{
+  "pedagogicalStrategy": "הסבר קצר ב-2 משפטים על ההיגיון של סדר הלימוד שנבחר לקורס",
+  "sessions": [
+    {
+      "sessionNumber": 1,
+      "title": "כותרת ברורה וממוקדת לסשן",
+      "fileIndex": 0,
+      "startPercent": 0,
+      "endPercent": 50,
+      "rationale": "נימוק קצר למה לומדים נושא זה בשלב הזה (למשל: בסיס אנטומי הכרחי לפני פתולוגיה)"
+    }
+  ]
+}
+
+רשימת הקבצים והתוכן שלהם:
+${JSON.stringify(filesCatalog)}`;
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: 'application/json' }
+      })
+    }
+  );
+
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  return JSON.parse(data.candidates[0].content.parts[0].text);
+}
+
+// 2. קריאה ל-Gemini API ליצירת חומר לימוד מובנה מתוך הטקסט של סשן ספציפי
 async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
   const prompt = `אתה מרצה בכיר לרפואה. עליך לבנות יחידת לימוד בעברית מתוך הטקסט הרפואי הבא עבור הנושא "${topic}".
 החזר תשובה אך ורק בפורמט JSON תקין (ללא סימני markdown מסביב) במבנה המדויק הבא:
@@ -116,7 +168,7 @@ ${rawTextChunk.slice(0, 14000)}`;
 
 // נתוני גיבוי למקרה שלא הוזן מפתח API
 const getFallbackContent = (topic) => ({
-  summary: `מצב הדגמה עבור "${topic}". כדי שהמערכת תנתח את הטקסט האמיתי מהקבצים שהעלית, לחץ על סמל גלגל השיניים למעלה והזן מפתח Gemini API חינמי.`,
+  summary: `מצב הדגמה עבור "${topic}". כדי שהמערכת תנתח את הטקסט האמיתי מהקבצים שהעלית, לחץ על כפתור ההגדרות למעלה והזן מפתח Gemini API חינמי.`,
   keyPoints: [
     'המערכת חילצה בהצלחה את הטקסט מהקבצים שהעלית.',
     'הזנת מפתח API תייצר כאן נקודות מפתח אמיתיות מתוך הסיכומים שלך.',
@@ -132,7 +184,7 @@ const getFallbackContent = (topic) => ({
     correctIndex: 0
   },
   flashcards: [
-    { id: 1, front: 'איך מפעילים AI אמיתי?', back: 'לוחצים על גלגל השיניים למעלה ומדביקים מפתח Google Gemini API.' },
+    { id: 1, front: 'איך מפעילים AI אמיתי?', back: 'לוחצים על כפתור ההגדרות למעלה ומדביקים מפתח Google Gemini API.' },
     { id: 2, front: 'אילו קבצים נתמכים?', back: 'PDF, מצגות PPTX, מסמכי Word ו-TXT.' }
   ],
   chapterQuiz: [
@@ -170,7 +222,7 @@ export default function App() {
   const [step, setStep] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
-      return saved.length > 0 ? 0 : 1; // 0 = מסך הקורסים שלי
+      return saved.length > 0 ? 0 : 1; // 0 = הקורסים שלי, 1 = טופס קורס חדש, 1.5 = בקרת תוכנית AI, 2 = לו"ז, 3 = למידה
     } catch {
       return 1;
     }
@@ -183,6 +235,10 @@ export default function App() {
   const [deadline, setDeadline] = useState('');
   const [selectedDays, setSelectedDays] = useState([0, 2, 4]);
   const [sessionDuration, setSessionDuration] = useState(45);
+
+  // מצב תכנון ובקרה של AI לפני אישור התוכנית
+  const [isPlanningAI, setIsPlanningAI] = useState(false);
+  const [draftPlan, setDraftPlan] = useState(null); // { strategy, dates, sessions }
 
   // מצב למידה אקטיבי
   const [activeSession, setActiveSession] = useState(null);
@@ -216,7 +272,6 @@ export default function App() {
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
-  // שמירה אוטומטית של כל הקורסים בדפדפן
   useEffect(() => {
     try {
       localStorage.setItem('medstudy_courses', JSON.stringify(courses));
@@ -241,17 +296,16 @@ export default function App() {
     localStorage.setItem('medstudy_api_key', val);
   };
 
-  // פתיחת טופס יצירת קורס חדש נקי
   const openNewCourseForm = () => {
     setCourseName('');
     setFiles([]);
     setDeadline('');
     setSelectedDays([0, 2, 4]);
     setSessionDuration(45);
+    setDraftPlan(null);
     setStep(1);
   };
 
-  // העלאת קבצים וחילוץ הטקסט האמיתי שלהם
   const handleFileUpload = async (e) => {
     const uploadedFiles = Array.from(e.target.files);
     setIsParsingFiles(true);
@@ -285,8 +339,8 @@ export default function App() {
     );
   };
 
-  // יצירת קורס חדש ושמירתו ברשימת הקורסים
-  const generateSchedule = () => {
+  // שלב 1 -> שלב 1.5: בניית טיוטת תוכנית פדגוגית עם AI והצגתה לבקרה
+  const generateAIDraftPlan = async () => {
     if (files.length === 0 || !deadline || selectedDays.length === 0) {
       alert('אנא העלה לפחות קובץ אחד, בחר דדליין וסמן ימי לימוד.');
       return;
@@ -316,42 +370,117 @@ export default function App() {
       return;
     }
 
-    const combinedText = files.map((f) => `--- קובץ: ${f.name} ---\n${f.text}`).join('\n\n');
-    const chunkSize = Math.ceil(combinedText.length / studyDates.length);
+    // אם יש מפתח API -> ה-AI מנתח את תוכן כל הקבצים ומסדר מהבסיס אל המתקדם
+    if (apiKey.trim()) {
+      setIsPlanningAI(true);
+      try {
+        const aiPlan = await buildAISyllabusPlan(apiKey.trim(), files, studyDates.length, sessionDuration);
+        
+        const plannedSessions = studyDates.map((date, idx) => {
+          const item = aiPlan.sessions[idx] || aiPlan.sessions[aiPlan.sessions.length - 1];
+          const targetFile = files[item.fileIndex] || files[0];
+          const textLen = targetFile.text.length;
+          const startIdx = Math.floor(((item.startPercent || 0) / 100) * textLen);
+          const endIdx = Math.floor(((item.endPercent || 100) / 100) * textLen);
+          const slice = targetFile.text.slice(startIdx, Math.max(endIdx, startIdx + 1500));
 
-    const generatedSessions = studyDates.map((date, index) => {
-      const fileIndex = Math.floor((index / studyDates.length) * files.length);
-      const currentFile = files[fileIndex];
-      const partNumber = (index % Math.ceil(studyDates.length / files.length)) + 1;
-      const textSlice = combinedText.slice(index * chunkSize, (index + 1) * chunkSize);
+          return {
+            title: item.title,
+            fileName: targetFile.name,
+            rationale: item.rationale,
+            textChunk: slice || targetFile.text
+          };
+        });
 
+        setDraftPlan({
+          strategy: aiPlan.pedagogicalStrategy,
+          dates: studyDates,
+          sessions: plannedSessions
+        });
+        setStep(1.5); // מעבר למסך בקרה ואישור
+      } catch (err) {
+        alert('שגיאה בתכנון האוטומטי מול ה-AI: ' + err.message);
+      } finally {
+        setIsPlanningAI(false);
+      }
+    } else {
+      // גיבוי ללא מפתח API
+      const combinedText = files.map((f) => `--- קובץ: ${f.name} ---\n${f.text}`).join('\n\n');
+      const chunkSize = Math.ceil(combinedText.length / studyDates.length);
+
+      const fallbackSessions = studyDates.map((date, index) => {
+        const fileIndex = Math.floor((index / studyDates.length) * files.length);
+        const currentFile = files[fileIndex];
+        const partNumber = (index % Math.ceil(studyDates.length / files.length)) + 1;
+        return {
+          title: `${currentFile.name.replace(/\.[^/.]+$/, "")} - חלק ${partNumber}`,
+          fileName: currentFile.name,
+          rationale: 'חלוקה לינארית (חבר מפתח AI למעלה כדי לסדר פדגוגית מהבסיס לקליניקה)',
+          textChunk: combinedText.slice(index * chunkSize, (index + 1) * chunkSize)
+        };
+      });
+
+      setDraftPlan({
+        strategy: 'חלוקה בסיסית לפי סדר הקבצים. מומלץ לחבר מפתח AI כדי לקבל סידור פדגוגי חכם.',
+        dates: studyDates,
+        sessions: fallbackSessions
+      });
+      setStep(1.5);
+    }
+  };
+
+  // פונקציות עריכה ובקרה בטיוטת התוכנית (שינוי סדר או כותרת)
+  const moveDraftSession = (index, direction) => {
+    const targetIdx = index + direction;
+    if (targetIdx < 0 || targetIdx >= draftPlan.sessions.length) return;
+    const updated = [...draftPlan.sessions];
+    const temp = updated[index];
+    updated[index] = updated[targetIdx];
+    updated[targetIdx] = temp;
+    setDraftPlan({ ...draftPlan, sessions: updated });
+  };
+
+  const updateDraftSessionTitle = (index, newTitle) => {
+    const updated = [...draftPlan.sessions];
+    updated[index] = { ...updated[index], title: newTitle };
+    setDraftPlan({ ...draftPlan, sessions: updated });
+  };
+
+  // אישור סופי של התוכנית לאחר בקרה ושמירת הקורס
+  const confirmAndSaveCourse = () => {
+    if (!draftPlan) return;
+
+    const finalSchedule = draftPlan.dates.map((date, index) => {
+      const s = draftPlan.sessions[index];
       return {
         id: index + 1,
         date: date.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'short' }),
         rawDate: date,
-        topic: `${currentFile.name.replace(/\.[^/.]+$/, "")} - חלק ${partNumber}`,
-        textChunk: textSlice,
+        topic: s.title,
+        rationale: s.rationale,
+        textChunk: s.textChunk,
         duration: sessionDuration,
-        completed: false,
+        completed: false
       };
     });
 
     const newCourse = {
       id: 'course-' + Date.now(),
       title: courseName.trim() || `קורס ${courses.length + 1} (${files[0].name.replace(/\.[^/.]+$/, "")})`,
+      strategy: draftPlan.strategy,
       deadline,
       sessionDuration,
       filesCount: files.length,
-      schedule: generatedSessions,
+      schedule: finalSchedule,
       createdAt: new Date().toLocaleDateString('he-IL')
     };
 
     setCourses((prev) => [newCourse, ...prev]);
     setActiveCourseId(newCourse.id);
+    setDraftPlan(null);
     setStep(2);
   };
 
-  // מחיקת קורס ספציפי
   const deleteCourse = (courseId, e) => {
     e.stopPropagation();
     if (!confirm('האם למחוק קורס זה לצמיתות?')) return;
@@ -363,7 +492,6 @@ export default function App() {
     }
   };
 
-  // ייצוא משימות של הקורס הנוכחי ליומן גוגל
   const exportToCalendarTasks = () => {
     if (!activeCourse) return;
     const formatDateOnly = (dateObj) => {
@@ -389,7 +517,7 @@ export default function App() {
         `DTSTART;VALUE=DATE:${dateStr}`,
         `DTEND;VALUE=DATE:${dateStr}`,
         `SUMMARY:📚 [${activeCourse.title}] ${session.topic} (${session.duration} דק׳)`,
-        `DESCRIPTION:יעד למידה מתוך MedStudy AI עבור הקורס ${activeCourse.title}.`,
+        `DESCRIPTION:${session.rationale || 'יעד למידה מתוך MedStudy AI'}.`,
         'END:VEVENT'
       );
     });
@@ -405,7 +533,6 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  // התחלת סשן למידה + עיבוד AI אמיתי של החומר
   const startSession = async (session) => {
     setActiveSession(session);
     setActiveTab('learn');
@@ -442,7 +569,6 @@ export default function App() {
     }
   };
 
-  // צ'אט מורה פרטי אמיתי שמבוסס על החומר של הסשן
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -454,7 +580,7 @@ export default function App() {
       setTimeout(() => {
         setChatMessages((prev) => [
           ...prev,
-          { role: 'ai', text: 'כדי שאוכל לענות תשובות אמיתיות מתוך הקבצים שלך, הזן מפתח Gemini API בהגדרות (גלגל השיניים למעלה).' }
+          { role: 'ai', text: 'כדי שאוכל לענות תשובות אמיתיות מתוך הקבצים שלך, הזן מפתח Gemini API בהגדרות (כפתור ההגדרות למעלה).' }
         ]);
       }, 400);
       return;
@@ -486,7 +612,6 @@ export default function App() {
     }
   };
 
-  // סימון משימה כהושלמה בתוך הקורס הפעיל
   const handleCheckUnderstanding = (idx, correctIdx) => {
     setSelectedAnswer(idx);
     if (idx === correctIdx && activeCourse) {
@@ -597,7 +722,7 @@ export default function App() {
                 <Key size={16} /> חיבור מנוע Google Gemini AI (חינמי)
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                הדבק מפתח API מ-Google AI Studio כדי לנתח את הקבצים שהעלית בזמן אמת (נשמר מקומית בדפדפן שלך בלבד).
+                הדבק מפתח API מ-Google AI Studio כדי לנתח את הקבצים ולסדר אותם פדגוגית (נשמר מקומית בדפדפן שלך בלבד).
               </p>
             </div>
             <div className="flex w-full sm:w-auto gap-2">
@@ -620,7 +745,7 @@ export default function App() {
       )}
 
       <main className="max-w-6xl mx-auto p-6">
-        {/* מסך 0: לוח הקורסים שלי (ריבוי קורסים במקביל) */}
+        {/* מסך 0: לוח הקורסים שלי */}
         {step === 0 && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
@@ -694,7 +819,7 @@ export default function App() {
           </div>
         )}
 
-        {/* מסך 1: יצירת קורס חדש */}
+        {/* מסך 1: העלאת קבצים והגדרת קורס */}
         {step === 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4">
             <div className="lg:col-span-6 space-y-6">
@@ -704,7 +829,7 @@ export default function App() {
                   1. העלאת חומרי לימוד לקורס
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-                  העלה סיכומים, מצגות הרצאות או מאמרים (PDF, PPTX, DOCX, TXT)
+                  העלה את כל המצגות והסיכומים – ה-AI יזהה לבד מה הבסיס ומה מתקדם ויסדר אותם בהתאם
                 </p>
 
                 <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer transition bg-slate-50/50 dark:bg-slate-950/50">
@@ -753,10 +878,10 @@ export default function App() {
                 <div>
                   <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
                     <Calendar size={20} className="text-blue-500" />
-                    2. הגדרות הקורס ותוכנית הלמידה
+                    2. הגדרות הקורס ותכנון AI
                   </h2>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    תן שם לקורס, הגדר דדליין וימים – ואנחנו נחלק את החומר
+                    ה-AI יסרוק את כל הקבצים, יבנה סילבוס מהבסיס לקליניקה ויציג לך לבקרה לפני אישור
                   </p>
                 </div>
 
@@ -828,13 +953,124 @@ export default function App() {
                 </div>
 
                 <button
-                  onClick={generateSchedule}
-                  className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition"
+                  onClick={generateAIDraftPlan}
+                  disabled={isPlanningAI}
+                  className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold rounded-xl shadow-lg shadow-blue-600/20 flex items-center justify-center gap-2 transition"
                 >
-                  <Sparkles size={20} />
-                  צור תוכנית למידה לקורס
+                  {isPlanningAI ? (
+                    <>
+                      <Loader2 size={20} className="animate-spin" />
+                      <span>ה-AI מנתח את הקבצים ומסדר מהבסיס לקליניקה...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Brain size={20} />
+                      <span>נתח חומר ובנה תוכנית חכמה לבקרה</span>
+                    </>
+                  )}
                 </button>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* מסך 1.5: בקרה ואישור תוכנית הלימודים שנבנתה על ידי ה-AI */}
+        {step === 1.5 && draftPlan && (
+          <div className="space-y-6 mt-4 max-w-4xl mx-auto">
+            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/40 space-y-4">
+              <div className="flex flex-wrap justify-between items-start gap-4">
+                <div>
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-500 flex items-center gap-1.5 w-fit">
+                    <Brain size={14} /> בקרת תוכנית AI לפני אישור
+                  </span>
+                  <h2 className="text-2xl font-bold mt-2">סדר הלמידה המומלץ עבורך</h2>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setStep(1)}
+                    className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    חזרה לעריכת קבצים
+                  </button>
+                  <button
+                    onClick={generateAIDraftPlan}
+                    disabled={isPlanningAI}
+                    className="px-4 py-2.5 rounded-xl border border-blue-500/40 text-blue-500 text-sm font-semibold hover:bg-blue-500/10 flex items-center gap-1.5"
+                  >
+                    <RotateCcw size={16} className={isPlanningAI ? 'animate-spin' : ''} />
+                    תכנן מחדש עם AI
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 text-sm text-slate-700 dark:text-slate-300">
+                <strong className="text-blue-500 block mb-1">היגיון פדגוגי שנבחר לקורס:</strong>
+                {draftPlan.strategy}
+              </div>
+
+              <p className="text-xs text-slate-500">
+                בדוק את סדר הנושאים למטה. תוכל להזיז סשנים למעלה/למטה או לערוך כותרות לפני שאתה מאשר סופית:
+              </p>
+
+              <div className="space-y-3">
+                {draftPlan.sessions.map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4"
+                  >
+                    <div className="flex items-start gap-3 flex-1">
+                      <span className="bg-blue-600 text-white font-bold text-xs w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-1">
+                        {idx + 1}
+                      </span>
+                      <div className="space-y-1.5 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                          <span className="font-semibold text-blue-500">
+                            {draftPlan.dates[idx]?.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'short' })}
+                          </span>
+                          <span>•</span>
+                          <span>מקור: {item.fileName}</span>
+                        </div>
+                        <input
+                          type="text"
+                          value={item.title}
+                          onChange={(e) => updateDraftSessionTitle(idx, e.target.value)}
+                          className="w-full font-bold text-sm bg-transparent border-b border-transparent focus:border-blue-500 outline-none py-0.5"
+                        />
+                        <p className="text-xs text-emerald-500/90 flex items-center gap-1">
+                          <Sparkles size={12} /> {item.rationale}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <button
+                        onClick={() => moveDraftSession(idx, -1)}
+                        disabled={idx === 0}
+                        className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30"
+                        title="הקדם סשן"
+                      >
+                        <ArrowUp size={14} />
+                      </button>
+                      <button
+                        onClick={() => moveDraftSession(idx, 1)}
+                        disabled={idx === draftPlan.sessions.length - 1}
+                        className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-200 dark:hover:bg-slate-800 disabled:opacity-30"
+                        title="דחה סשן"
+                      >
+                        <ArrowDown size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={confirmAndSaveCourse}
+                className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition text-base"
+              >
+                <Check size={20} />
+                אשר תוכנית וצור לוח זמנים ({draftPlan.sessions.length} סשנים)
+              </button>
             </div>
           </div>
         )}
@@ -843,14 +1079,17 @@ export default function App() {
         {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800">
-              <div>
+              <div className="space-y-1 max-w-2xl">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold px-2.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500">קורס פעיל</span>
                   <h2 className="text-xl font-bold">{activeCourse.title}</h2>
                 </div>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                <p className="text-sm text-slate-500 dark:text-slate-400">
                   {activeCourse.schedule.length} משימות למידה של {activeCourse.sessionDuration} דקות • הושלמו {activeCourse.schedule.filter(s => s.completed).length}/{activeCourse.schedule.length}
                 </p>
+                {activeCourse.strategy && (
+                  <p className="text-xs text-blue-500/90 pt-1">{activeCourse.strategy}</p>
+                )}
               </div>
               <div className="flex flex-wrap gap-3">
                 <button
@@ -874,7 +1113,7 @@ export default function App() {
               {activeCourse.schedule.map((session) => (
                 <div
                   key={session.id}
-                  className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition flex items-center justify-between ${
+                  className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition flex items-center justify-between gap-3 ${
                     session.completed 
                       ? 'border-emerald-500/50 bg-emerald-500/5' 
                       : 'border-slate-200 dark:border-slate-800 hover:border-blue-500/50'
@@ -882,7 +1121,7 @@ export default function App() {
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-2 text-xs font-medium text-blue-500">
-                      <span>משימה #{session.id}</span>
+                      <span>שלב #{session.id}</span>
                       <span>•</span>
                       <span>{session.date}</span>
                       {session.completed && (
@@ -892,7 +1131,10 @@ export default function App() {
                       )}
                     </div>
                     <h3 className="font-semibold text-base">{session.topic}</h3>
-                    <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                    {session.rationale && (
+                      <p className="text-xs text-slate-400">{session.rationale}</p>
+                    )}
+                    <div className="flex items-center gap-1.5 text-xs text-slate-500 pt-0.5">
                       <Clock size={14} />
                       <span>{session.duration} דקות למידה</span>
                     </div>
@@ -954,7 +1196,7 @@ export default function App() {
                   <>
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-5">
                       <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
-                        <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • משימה #{activeSession.id} • {activeSession.duration} דקות</span>
+                        <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות</span>
                         <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
                       </div>
 
