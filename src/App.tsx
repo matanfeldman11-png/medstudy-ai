@@ -72,24 +72,24 @@ function getSmartCoveredText(text, maxChars = 25000) {
 }
 
 async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  // שימוש במודל החדש שגוגל דורשים, עם גיבויים יציבים
+  // רשימת מודלים מעודכנת וישירה ללא תלות ב-listModels
   const models = [
-    { name: 'gemini-3.8-flash', timeout: 45000 },
-    { name: 'gemini-1.5-flash', timeout: 45000 },
-    { name: 'gemini-1.5-pro', timeout: 60000 }
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro'
   ];
   let lastError = null;
 
-  for (const m of models) {
+  for (const modelName of models) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), m.timeout);
+    const timeoutId = setTimeout(() => controller.abort(), 45000);
 
     try {
       const generationConfig = {};
       if (isJson) generationConfig.responseMimeType = 'application/json';
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${m.name}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -103,7 +103,10 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
 
       const data = await response.json();
       if (data.error) throw new Error(data.error.message);
-      return data.candidates[0].content.parts[0].text;
+      if (data.candidates && data.candidates[0]?.content?.parts[0]?.text) {
+        return data.candidates[0].content.parts[0].text;
+      }
+      throw new Error('תגובה ריקה מהשרת');
     } catch (err) {
       lastError = err;
     } finally {
@@ -111,7 +114,7 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
     }
   }
 
-  throw lastError;
+  throw new Error('כל המודלים נכשלו. שגיאה אחרונה: ' + (lastError?.message || 'לא ידועה'));
 }
 
 async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
