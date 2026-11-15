@@ -74,12 +74,12 @@ function getSmartCoveredText(text, maxChars = 8500) {
   return `${start}\n\n[...המשך הפרק...]\n\n${middle}\n\n[...חלק אחרון של הפרק...]\n\n${end}`;
 }
 
-// פונקציית עזר חסינת-עומס: מנסה מודל ראשי, ואם יש עומס עובר אוטומטית למודל גיבוי
+// פונקציית עזר חסינת-עומס: מנסה עד 3 פעמים מול gemini-3.8-flash עם השהיה קצרה במקרה של עומס זמני
 async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs = 25000) {
-  const models = ['gemini-3.8-flash', 'gemini-2.5-flash'];
+  const maxRetries = 3;
   let lastError = null;
 
-  for (const model of models) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -88,7 +88,7 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs =
       if (isJson) body.generationConfig = { responseMimeType: 'application/json' };
 
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -102,11 +102,17 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true, timeoutMs =
       return data.candidates[0].content.parts[0].text;
     } catch (err) {
       lastError = err;
-      // אם יש עומס בשרתים או שגיאה זמנית, עובר אוטומטית למודל הבא ברשימה
+      // אם יש עומס זמני בשרת, ממתין 2 שניות ומנסה שוב אוטומטית
+      if (attempt < maxRetries) {
+        await new Promise((res) => setTimeout(res, 2000 * attempt));
+      }
     } finally {
       clearTimeout(timeoutId);
     }
   }
+
+  throw lastError;
+}  }
 
   throw lastError;
 }
