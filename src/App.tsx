@@ -4,7 +4,7 @@ import {
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
   Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
-  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check
+  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -22,21 +22,89 @@ const DAYS_OF_WEEK = [
   { id: 6, label: 'ש׳', full: 'שבת' },
 ];
 
-async function extractTextFromFile(file) {
-  const ext = file.name.split('.').pop().toLowerCase();
+// ==========================================
+// 1. מנוע אחסון IndexedDB (ללא מגבלת 5MB)
+// ==========================================
+const DB_NAME = 'MedStudyNursingDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'courses_store';
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveCoursesToIDB(courses: any[]) {
+  const db = await openDB();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put(courses, 'all_courses');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function loadCoursesFromIDB(): Promise<any[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).get('all_courses');
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ==========================================
+// 2. ערבוב תשובות אמיתי בצד הלקוח (Fisher-Yates)
+// ==========================================
+function shuffleQuestionOptions<T extends { options?: string[]; opts?: string[]; correctIndex?: number; ans?: number; correct?: number }>(item: T): T {
+  const listKey = item.options ? 'options' : 'opts';
+  const indexKey = item.correctIndex !== undefined ? 'correctIndex' : item.ans !== undefined ? 'ans' : 'correct';
+  const originalList = [...(item[listKey] || [])];
+  const originalCorrectIdx = item[indexKey] as number;
+
+  if (originalList.length <= 1 || originalCorrectIdx === undefined) return item;
+
+  const indexed = originalList.map((text, idx) => ({ text, isCorrect: idx === originalCorrectIdx }));
+  for (let i = indexed.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indexed[i], indexed[j]] = [indexed[j], indexed[i]];
+  }
+
+  return {
+    ...item,
+    [listKey]: indexed.map((x) => x.text),
+    [indexKey]: indexed.findIndex((x) => x.isCorrect),
+  };
+}
+
+// ==========================================
+// 3. חילוץ טקסט וחלוקה סמנטית ללא חפיפות או איבוד חומר
+// ==========================================
+async function extractTextFromFile(file: File): Promise<string> {
+  const ext = file.name.split('.').pop()?.toLowerCase();
   const arrayBuffer = await file.arrayBuffer();
 
   if (ext === 'txt') {
     return await file.text();
   }
-  
+
   if (ext === 'pdf') {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      fullText += content.items.map((item) => item.str).join(' ') + '\n';
+      fullText += `\n[עמוד ${i}]\n` + content.items.map((item: any) => item.str).join(' ') + '\n';
     }
     return fullText;
   }
@@ -49,11 +117,18 @@ async function extractTextFromFile(file) {
   if (ext === 'pptx' || ext === 'ppt') {
     const zip = await JSZip.loadAsync(arrayBuffer);
     let slideText = '';
-    const slideFiles = Object.keys(zip.files).filter((name) => name.startsWith('ppt/slides/slide') && name.endsWith('.xml'));
-    for (const slideName of slideFiles) {
-      const xml = await zip.files[slideName].async('text');
+    const slideFiles = Object.keys(zip.files)
+      .filter((name) => name.startsWith('ppt/slides/slide') && name.endsWith('.xml'))
+      .sort((a, b) => {
+        const numA = parseInt(a.replace(/\D/g, ''), 10);
+        const numB = parseInt(b.replace(/\D/g, ''), 10);
+        return numA - numB;
+      });
+
+    for (let idx = 0; idx < slideFiles.length; idx++) {
+      const xml = await zip.files[slideFiles[idx]].async('text');
       const matches = xml.match(/<a:t[^>]*>([^<]+)<\/a:t>/g) || [];
-      slideText += matches.map((tag) => tag.replace(/<[^>]+>/g, '')).join(' ') + '\n';
+      slideText += `\n[שקופית ${idx + 1}]\n` + matches.map((tag) => tag.replace(/<[^>]+>/g, '')).join(' ') + '\n';
     }
     return slideText;
   }
@@ -61,51 +136,173 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-function getSmartCoveredText(text, maxChars = 25000) {
-  if (!text || text.length <= maxChars) return text;
-  const partSize = Math.floor(maxChars / 3);
-  const start = text.slice(0, partSize);
-  const midStart = Math.floor(text.length / 2) - Math.floor(partSize / 2);
-  const middle = text.slice(midStart, midStart + partSize);
-  const end = text.slice(text.length - partSize);
-  return `${start}\n\n[...המשך חומר לימוד מעמיק...]\n\n${middle}\n\n[...חלק מתקדם נוסף...]\n\n${end}`;
+// חלוקה דטרמיניסטית רציפה ללא חפיפות וללא השמטת אף תו מהקבצים
+function splitFilesIntoDeterministicChunks(files: any[], targetSessionCount: number) {
+  const annotatedBlocks: { fileName: string; text: string }[] = [];
+
+  files.forEach((f) => {
+    const paragraphs = f.text
+      .split(/\n{2,}|(?=\[שקופית \d+\])|(?=\[עמוד \d+\])/)
+      .map((p: string) => p.trim())
+      .filter((p: string) => p.length > 0);
+
+    paragraphs.forEach((p: string) => {
+      annotatedBlocks.push({ fileName: f.name, text: p });
+    });
+  });
+
+  const totalChars = annotatedBlocks.reduce((acc, b) => acc + b.text.length, 0);
+  if (totalChars === 0) {
+    return Array.from({ length: targetSessionCount }, (_, i) => ({
+      sessionIndex: i,
+      fileName: files[0]?.name || 'חומר לימוד',
+      textChunk: 'אין טקסט זמין בקובץ.',
+      charCount: 0,
+    }));
+  }
+
+  const targetCharsPerSession = Math.ceil(totalChars / targetSessionCount);
+  const chunks: { sessionIndex: number; fileName: string; textChunk: string; charCount: number }[] = [];
+
+  let currentBlocks: { fileName: string; text: string }[] = [];
+  let currentLen = 0;
+
+  for (let i = 0; i < annotatedBlocks.length; i++) {
+    const block = annotatedBlocks[i];
+    currentBlocks.push(block);
+    currentLen += block.text.length;
+
+    const remainingSessions = targetSessionCount - chunks.length - 1;
+    const remainingBlocks = annotatedBlocks.length - i - 1;
+
+    if (
+      remainingSessions > 0 &&
+      currentLen >= targetCharsPerSession &&
+      remainingBlocks >= remainingSessions
+    ) {
+      const uniqueFiles = [...new Set(currentBlocks.map((b) => b.fileName))];
+      chunks.push({
+        sessionIndex: chunks.length,
+        fileName: uniqueFiles.join(' + '),
+        textChunk: currentBlocks.map((b) => b.text).join('\n\n'),
+        charCount: currentLen,
+      });
+      currentBlocks = [];
+      currentLen = 0;
+    }
+  }
+
+  if (currentBlocks.length > 0) {
+    const uniqueFiles = [...new Set(currentBlocks.map((b) => b.fileName))];
+    chunks.push({
+      sessionIndex: chunks.length,
+      fileName: uniqueFiles.join(' + '),
+      textChunk: currentBlocks.map((b) => b.text).join('\n\n'),
+      charCount: currentLen,
+    });
+  }
+
+  // השלמה במקרה של מעט מאוד פסקאות ביחס למספר הימים
+  while (chunks.length < targetSessionCount) {
+    const last = chunks[chunks.length - 1];
+    chunks.push({
+      sessionIndex: chunks.length,
+      fileName: last.fileName,
+      textChunk: last.textChunk,
+      charCount: last.charCount,
+    });
+  }
+
+  return chunks;
 }
 
-async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
-  let candidateModels = ['gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+// חישוב פרמטרי הוראה לפי משך הסשן (30 / 45 / 60 / 90 דקות)
+function getDurationConfig(minutes: number) {
+  if (minutes <= 30) {
+    return {
+      blocksCount: 3,
+      sentencesPerBlock: '4-5',
+      quizCount: 5,
+      cardsCount: 6,
+      triageMode: 'מצב ממוקד מבחן (High-Yield בלבד): סנן פרטים שוליים והתמקד רק במנגנונים קריטיים, דגלים אדומים והתערבויות סיעודיות חיוניות.',
+    };
+  }
+  if (minutes <= 45) {
+    return {
+      blocksCount: 4,
+      sentencesPerBlock: '5-7',
+      quizCount: 7,
+      cardsCount: 8,
+      triageMode: 'איזון קליני ממוקד: כסה את המושגים המרכזיים והתערבויות המפתח תוך דילוג על רקע תיאורטי משני.',
+    };
+  }
+  if (minutes <= 60) {
+    return {
+      blocksCount: 5,
+      sentencesPerBlock: '6-8',
+      quizCount: 10,
+      cardsCount: 10,
+      triageMode: 'כיסוי קליני מלא: פתופיזיולוגיה, הערכה סיעודית, תרופות וניהול סיבוכים.',
+    };
+  }
+  return {
+    blocksCount: 7,
+    sentencesPerBlock: '8-10',
+    quizCount: 12,
+    cardsCount: 14,
+    triageMode: 'העמקה מקסימלית (90 דק׳): ניתוח מקיף של כל מנגנוני הפעולה, אבחנה מבדלת, ערכי מעבדה ופרוטוקולי טיפול מלאים.',
+  };
+}
 
-  // שליפת כל המודלים הפעילים באמת במפתח שלך וסינון מודלים שיצאו משימוש
+// ==========================================
+// 4. תקשורת AI מפוצלת, מהירה ותומכת Proxy
+// ==========================================
+async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = true): Promise<string> {
+  const useServerProxy = import.meta.env.VITE_USE_PROXY === 'true' && !apiKey;
+
+  if (useServerProxy) {
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, isJson }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'שגיאת שרת Proxy');
+    return data.text;
+  }
+
+  let candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+
   try {
     const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
     const listData = await listRes.json();
     if (listData?.models) {
       const dynamicModels = listData.models
-        .filter(m =>
-          m.supportedGenerationMethods?.includes('generateContent') &&
-          (m.name.includes('flash') || m.name.includes('pro')) &&
-          !m.name.includes('1.5') &&
-          !m.name.includes('2.5') &&
-          !m.name.includes('vision')
+        .filter(
+          (m: any) =>
+            m.supportedGenerationMethods?.includes('generateContent') &&
+            (m.name.includes('flash') || m.name.includes('pro')) &&
+            !m.name.includes('1.5') &&
+            !m.name.includes('vision')
         )
-        .map(m => m.name.replace('models/', ''));
+        .map((m: any) => m.name.replace('models/', ''));
 
       if (dynamicModels.length > 0) {
         candidateModels = [...new Set([...dynamicModels, ...candidateModels])];
       }
     }
   } catch (e) {
-    console.warn('ממשיך עם רשימת המודלים העדכנית', e);
+    console.warn('ממשיך עם רשימת מודלים ברירת מחדל', e);
   }
 
-  let lastError = null;
+  let lastError: any = null;
 
-  // מעבר אוטומטי על המודלים הזמינים עד שאחד מהם מחזיר תשובה תקינה
   for (const modelName of candidateModels) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 55000);
+    const timeoutId = setTimeout(() => controller.abort(), 35000);
 
     try {
-      const generationConfig = {};
+      const generationConfig: any = {};
       if (isJson) generationConfig.responseMimeType = 'application/json';
 
       const response = await fetch(
@@ -116,14 +313,14 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
           signal: controller.signal,
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig
-          })
+            generationConfig,
+          }),
         }
       );
 
       const data = await response.json();
       if (data.error) throw new Error(data.error.message);
-      
+
       let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (rawText) {
         if (isJson) {
@@ -138,197 +335,229 @@ async function callGeminiWithFallback(apiKey, prompt, isJson = true) {
     }
   }
 
-  throw new Error(`לא נמצא מודל זמין במפתח. שגיאה אחרונה: ${lastError?.message || 'שגיאה לא ידועה'}`);
+  throw new Error(`לא התקבלה תשובה מהמודל. שגיאה: ${lastError?.message || 'שגיאה לא ידועה'}`);
 }
 
-
-async function buildAISyllabusPlan(apiKey, files, totalSessionsCount, sessionDuration) {
-  const filesCatalog = files.map((f, idx) => ({
-    fileIndex: idx,
-    fileName: f.name,
-    wordCount: f.wordCount,
-    excerpt: f.text.slice(0, 600)
+// בניית שמות ורציונל על גבי מקטעים אמיתיים שכבר חולקו (ללא ניחושי אחוזים)
+async function enrichChunksWithAITitles(apiKey: string, chunks: any[], sessionDuration: number) {
+  const previews = chunks.map((c, idx) => ({
+    index: idx,
+    fileName: c.fileName,
+    charCount: c.charCount,
+    startPreview: c.textChunk.slice(0, 700),
+    midPreview: c.textChunk.slice(Math.floor(c.textChunk.length / 2), Math.floor(c.textChunk.length / 2) + 500),
   }));
 
-  const prompt = `אתה מרצה בכיר לסיעוד. סדר ${files.length} קבצים על פני בדיוק ${totalSessionsCount} סשנים של ${sessionDuration} דקות מהבסיס למתקדם.
-החזר JSON תקין בלבד במבנה הבא (ללא טקסט נוסף):
+  const prompt = `אתה מרצה בכיר לסיעוד. לפניך ${chunks.length} יחידות לימוד רציפות (ללא חפיפה) עבור סשנים של ${sessionDuration} דקות.
+לכל יחידה, תן כותרת קלינית מדויקת בעברית ונימוק פדגוגי קצר (משפט אחד) על סמך התוכן האמיתי שלה.
+החזר JSON תקין בלבד:
 {
-  "pedagogicalStrategy": "סקירה קצרה של סדר הלימוד",
-  "sessions": [
-    {
-      "sessionNumber": 1,
-      "title": "כותרת מקצועית לסשן בסיעוד",
-      "fileIndex": 0,
-      "startPercent": 0,
-      "endPercent": 50,
-      "rationale": "נימוק קצר"
-    }
+  "pedagogicalStrategy": "סקירה קצרה של רצף הלמידה",
+  "titles": [
+    { "index": 0, "title": "כותרת קלינית מדויקת", "rationale": "נימוק קצר" }
   ]
 }
-קבצים: ${JSON.stringify(filesCatalog)}`;
+יחידות: ${JSON.stringify(previews)}`;
 
   const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
   return JSON.parse(jsonText);
 }
 
-async function generateAIStudyMaterial(apiKey, topic, rawTextChunk) {
-  const coveredText = getSmartCoveredText(rawTextChunk, 25000);
+// קריאה 1 (מהירה): יצירת שלבי הוראה אינטראקטיביים (Socratic Mastery Blocks)
+async function generateInteractiveLessonBlocks(apiKey: string, topic: string, rawTextChunk: string, duration: number) {
+  const cfg = getDurationConfig(duration);
+  // שולחים עד 35,000 תווים ברצף מלא (ללא חיתוך שלישים שזורק חומר)
+  const fullContext = rawTextChunk.slice(0, 35000);
 
-  const prompt = `מרצה בכיר לסיעוד: בנה יחידת לימוד אקדמית, מקיפה ומעמיקה מאוד בעברית לנושא "${topic}" מתוך טקסט החובה המצורף.
-דרישות קפדניות:
-- עליך לחשוב על ולבנות בדיוק 8 כותרות מרכזיות (sections) המכסות את כלל החומר הקליני והפתופיזיולוגי.
-- תחת כל אחת מה-8 כותרות, שדה התוכן (content) חייב להכיל **לפחות 10 משפטים מלאים, ארוכים ומפורטים** העוסקים ברציונל הרפואי, בפתופיזיולוגיה, בהערכה הסיעודית ובטיפול הקליני.
-- בנוסף, ספק 10 כרטיסיות שינון מפורטות, בוחן של בדיוק 10 שאלות עם הסברי שגיאות, ו-3 מקרי Code Blue.
+  const prompt = `אתה מרצה ומדריך קליני בסיעוד. בנה שיעור אינטראקטיבי בעברית לנושא "${topic}" עבור סשן של ${duration} דקות.
+הנחיית תעדוף זמן: ${cfg.triageMode}
 
-החזר JSON תקין בלבד במבנה הבא (ללא שום טקסט נוסף לפני או אחרי):
+חלק את השיעור ל-${cfg.blocksCount} שלבי לימוד עוקבים (blocks).
+בכל שלב:
+1. "title": כותרת ממוקדת.
+2. "explanation": הסבר בהיר ומעמיק בן ${cfg.sentencesPerBlock} משפטים מתוך החומר בלבד.
+3. "checkQuestion": שאלת הבנה יישומית/קלינית לבדיקת שליטה לפני מעבר לשלב הבא.
+4. "options": 4 אפשרויות תשובה סבירות.
+5. "correctIndex": אינדקס התשובה הנכונה (0-3).
+6. "feedbackByOption": מערך של 4 משובים קצרים וספציפיים (אחד לכל אפשרות) המסבירים לסטודנט למה הבחירה נכונה או מה הטעות הקלינית בה.
+
+בנוסף, צור טבלת השוואה קלינית קצרה ("comparisonTable") אם רלוונטי לחומר.
+
+החזר JSON תקין בלבד:
 {
-  "sections": [
-    { "title": "כותרת 1", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 2", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 3", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 4", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 5", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 6", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 7", "content": "10 משפטים מלאים ומפורטים..." },
-    { "title": "כותרת 8", "content": "10 משפטים מלאים ומפורטים..." }
+  "blocks": [
+    {
+      "title": "כותרת שלב 1",
+      "explanation": "הסבר מפורט...",
+      "checkQuestion": "שאלה קלינית?",
+      "options": ["אפשרות 1", "אפשרות 2", "אפשרות 3", "אפשרות 4"],
+      "correctIndex": 0,
+      "feedbackByOption": ["משוב לאפשרות 1", "משוב לאפשרות 2", "משוב לאפשרות 3", "משוב לאפשרות 4"]
+    }
   ],
   "comparisonTable": [
-    {"param": "פרמטר", "acute": "ממצא א׳", "chronic": "ממצא ב׳"}
-  ],
-  "comprehensionCheck": {
-    "question": "שאלת הבנה קלינית",
-    "options": ["תשובה נכונה", "מסיח 1", "מסיח 2"],
-    "correctIndex": 0
-  },
-  "flashcards": [
-    {"id": 1, "front": "מושג 1", "back": "הסבר מפורט 1"},
-    {"id": 2, "front": "מושג 2", "back": "הסבר מפורט 2"},
-    {"id": 3, "front": "מושג 3", "back": "הסבר מפורט 3"},
-    {"id": 4, "front": "מושג 4", "back": "הסבר מפורט 4"},
-    {"id": 5, "front": "מושג 5", "back": "הסבר מפורט 5"},
-    {"id": 6, "front": "מושג 6", "back": "הסבר מפורט 6"},
-    {"id": 7, "front": "מושג 7", "back": "הסבר מפורט 7"},
-    {"id": 8, "front": "מושג 8", "back": "הסבר מפורט 8"},
-    {"id": 9, "front": "מושג 9", "back": "הסבר מפורט 9"},
-    {"id": 10, "front": "מושג 10", "back": "הסבר מפורט 10"}
-  ],
-  "chapterQuiz": [
-    { "q": "שאלה 1", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 1" },
-    { "q": "שאלה 2", "opts": ["מסיח 1", "נכונה", "מסיח 2", "מסיח 3"], "ans": 1, "explanation": "הסבר קליני מלא 2" },
-    { "q": "שאלה 3", "opts": ["מסיח 1", "מסיח 2", "נכונה", "מסיח 3"], "ans": 2, "explanation": "הסבר קליני מלא 3" },
-    { "q": "שאלה 4", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 4" },
-    { "q": "שאלה 5", "opts": ["מסיח 1", "מסיח 2", "מסיח 3", "נכונה"], "ans": 3, "explanation": "הסבר קליני מלא 5" },
-    { "q": "שאלה 6", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 6" },
-    { "q": "שאלה 7", "opts": ["מסיח 1", "נכונה", "מסיח 2", "מסיח 3"], "ans": 1, "explanation": "הסבר קליני מלא 7" },
-    { "q": "שאלה 8", "opts": ["מסיח 1", "מסיח 2", "נכונה", "מסיח 3"], "ans": 2, "explanation": "הסבר קליני מלא 8" },
-    { "q": "שאלה 9", "opts": ["נכונה", "מסיח 1", "מסיח 2", "מסיח 3"], "ans": 0, "explanation": "הסבר קליני מלא 9" },
-    { "q": "שאלה 10", "opts": ["מסיח 1", "מסיח 2", "מסיח 3", "נכונה"], "ans": 3, "explanation": "הסבר קליני מלא 10" }
-  ],
-  "codeBlueCases": [
-    {"scenario": "מקרה קליני 1", "question": "מה הפעולה?", "options": ["נכונה", "טעות 1", "טעות 2"], "correct": 0},
-    {"scenario": "מקרה קליני 2", "question": "מה הפעולה?", "options": ["טעות 1", "נכונה", "טעות 2"], "correct": 1},
-    {"scenario": "מקרה קליני 3", "question": "מה הפעולה?", "options": ["טעות 1", "טעות 2", "נכונה"], "correct": 2}
+    { "param": "פרמטר", "acute": "ממצא א׳", "chronic": "ממצא ב׳" }
   ]
 }
 
-טקסט החובה:
-${coveredText}`;
+חומר הלימוד של הסשן:
+${fullContext}`;
 
   const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
-  return JSON.parse(jsonText);
+  const parsed = JSON.parse(jsonText);
+
+  // ערבוב התשובות והמשובים בצד הלקוח!
+  if (Array.isArray(parsed.blocks)) {
+    parsed.blocks = parsed.blocks.map((b: any) => {
+      const zipped = (b.options || []).map((opt: string, idx: number) => ({
+        opt,
+        feedback: b.feedbackByOption?.[idx] || (idx === b.correctIndex ? 'תשובה נכונה!' : 'תשובה שגויה, נסה שוב.'),
+        isCorrect: idx === b.correctIndex,
+      }));
+      for (let i = zipped.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [zipped[i], zipped[j]] = [zipped[j], zipped[i]];
+      }
+      return {
+        ...b,
+        options: zipped.map((z: any) => z.opt),
+        feedbackByOption: zipped.map((z: any) => z.feedback),
+        correctIndex: zipped.findIndex((z: any) => z.isCorrect),
+      };
+    });
+  }
+
+  return parsed;
 }
 
-const getFallbackContent = (topic) => ({
-  sections: Array.from({ length: 8 }, (_, i) => ({
-    title: `כותרת לימוד מספר ${i + 1} בנושא ${topic}`,
-    content: `זהו תוכן הדגמה עבור כותרת ${i + 1}. על מנת שהמערכת תיצור 8 כותרות מפורטות המכילות כל אחת לפחות 10 משפטים קליניים מתוך הקבצים שלך, עליך לחבר מפתח Gemini API חופשי דרך כפתור ההגדרות בראש העמוד. ברגע שהמפתח מחובר, המערכת תבצע ניתוח מעמיק ואמיתי של כל חומר הלימוד שלך ותציג את כל הפירוט הנדרש לשעה שלמה של תרגול סיעודי מעמיק ויסודי.`
-  })),
-  comparisonTable: [
-    { param: 'סטטוס', acute: 'Demo', chronic: 'AI מלא' }
-  ],
-  comprehensionCheck: {
-    question: 'איך מפעילים ניתוח מלא?',
-    options: ['הזנת מפתח API', 'סגירה'],
-    correctIndex: 0
-  },
-  flashcards: Array.from({ length: 10 }, (_, i) => ({
-    id: i + 1,
-    front: `מושג הדגמה מספר ${i + 1}`,
-    back: `הסבר מפורט עבור מושג מספר ${i + 1} במצב הדגמה.`
-  })),
-  chapterQuiz: Array.from({ length: 10 }, (_, i) => ({
-    q: `שאלת הדגמה מספר ${i + 1} לבחינה קלינית?`,
-    opts: ['תשובה נכונה', 'מסיח 1', 'מסיח 2', 'מסיח 3'],
-    ans: 0,
-    explanation: `הסבר מפורט לשאלה ${i + 1}: מדוע זו התשובה הנכונה ומה משמעות השגיאה.`
-  })),
-  codeBlueCases: [
-    {
-      scenario: 'תרחיש קליני במיון לבדיקת תפקוד.',
-      question: 'מה הפעולה הנדרשת?',
-      options: ['פעולה נכונה', 'שגיאה 1', 'שגיאה 2'],
-      correct: 0
-    }
-  ]
-});
+// קריאה 2 (On-Demand): יצירת כרטיסיות בלבד
+async function generateFlashcardsOnly(apiKey: string, rawTextChunk: string, duration: number) {
+  const cfg = getDurationConfig(duration);
+  const prompt = `צור ${cfg.cardsCount} כרטיסיות שינון קליניות בעברית מתוך החומר הבא. התמקד במושגים החשובים ביותר למבחן.
+החזר מערך JSON תקין בלבד:
+[
+  { "id": 1, "front": "מושג / שאלה קצרה", "back": "הסבר קליני ממוקד" }
+]
+חומר: ${rawTextChunk.slice(0, 30000)}`;
 
+  const resText = await callGeminiWithFallback(apiKey, prompt, true);
+  return JSON.parse(resText);
+}
+
+// קריאה 3 (On-Demand): יצירת בוחן אמריקאי + ערבוב תשובות בצד הלקוח
+async function generateQuizOnly(apiKey: string, rawTextChunk: string, duration: number) {
+  const cfg = getDurationConfig(duration);
+  const prompt = `צור בוחן של ${cfg.quizCount} שאלות קליניות רב-בררתיות (4 אפשרויות) בעברית מתוך החומר הבא, ברמת מבחן ממשלתי בסיעוד.
+החזר מערך JSON תקין בלבד:
+[
+  {
+    "q": "שאלה קלינית",
+    "opts": ["אפשרות א", "אפשרות ב", "אפשרות ג", "אפשרות ד"],
+    "ans": 0,
+    "explanation": "הסבר קליני מלא מדוע זו התשובה הנכונה ומדוע האחרות שגויות"
+  }
+]
+חומר: ${rawTextChunk.slice(0, 30000)}`;
+
+  const resText = await callGeminiWithFallback(apiKey, prompt, true);
+  const parsed = JSON.parse(resText);
+  return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
+}
+
+// קריאה 4 (On-Demand): יצירת סימולציית Code Blue + ערבוב תשובות בצד הלקוח
+async function generateCodeBlueOnly(apiKey: string, rawTextChunk: string) {
+  const prompt = `צור 4 תרחישי חירום / התערבות סיעודית (Code Blue) בעברית מתוך החומר הבא.
+החזר מערך JSON תקין בלבד:
+[
+  {
+    "scenario": "תיאור מטופל ומדדים חיוניים",
+    "question": "מהי ההתערבות הסיעודית הראשונה בעדיפות עליונה?",
+    "options": ["התערבות א", "התערבות ב", "התערבות ג"],
+    "correct": 0,
+    "rationale": "הסבר קליני קצר"
+  }
+]
+חומר: ${rawTextChunk.slice(0, 25000)}`;
+
+  const resText = await callGeminiWithFallback(apiKey, prompt, true);
+  const parsed = JSON.parse(resText);
+  return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
+}
+
+const getFallbackLesson = (topic: string, duration: number) => {
+  const cfg = getDurationConfig(duration);
+  return {
+    blocks: Array.from({ length: cfg.blocksCount }, (_, i) => ({
+      title: `שלב למידה ${i + 1}: יסודות ${topic}`,
+      explanation: `זהו בלוק למידה אינטראקטיבי מספר ${i + 1} המותאם לסשן של ${duration} דקות. חבר מפתח Gemini API בהגדרות כדי לקבל ניתוח מלא מתוך הקבצים שלך ללא איבוד מידע. בכל שלב תידרש לענות על שאלת הבנה ולקבל משוב קליני מיידי לפני שייפתח השלב הבא.`,
+      checkQuestion: `שאלת בדיקה לשלב ${i + 1}: מה נדרש כדי לפתוח את השלב הבא בלמידה?`,
+      options: ['מענה נכון על שאלת ההבנה הנוכחית', 'דילוג ישיר לבוחן', 'סגירת הדפדפן', 'מחיקת הקורס'],
+      correctIndex: 0,
+      feedbackByOption: [
+        'מדויק! הלמידה בנויה בצורה מדורגת כך שכל שלב נפתח לאחר הבנת השלב הקודם.',
+        'לא ניתן לדלג לבוחן לפני השלמת כל שלבי ההוראה.',
+        'סגירת הדפדפן לא תקדם אותך בפרק.',
+        'ממש לא, אנחנו רוצים לסיים את הקורס בהצלחה.'
+      ],
+    })),
+    comparisonTable: [{ param: 'מצב מערכת', acute: 'מצב הדגמה', chronic: 'מחובר ל-AI' }],
+  };
+};
+
+// ==========================================
+// 5. הקומפוננטה הראשית
+// ==========================================
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
   const [showSettings, setShowSettings] = useState(false);
 
-  const [courses, setCourses] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
-      return saved.map((c) => ({
-        ...c,
-        schedule: (c.schedule || []).map((s) => ({ ...s, rawDate: new Date(s.rawDate) }))
-      }));
-    } catch {
-      return [];
-    }
-  });
+  const [courses, setCourses] = useState<any[]>([]);
+  const [isDBLoaded, setIsDBLoaded] = useState(false);
+  const [activeCourseId, setActiveCourseId] = useState<string | null>(() => localStorage.getItem('medstudy_active_course') || null);
+  const [step, setStep] = useState<number>(1);
 
-  const [activeCourseId, setActiveCourseId] = useState(() => localStorage.getItem('medstudy_active_course') || null);
-  const [step, setStep] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('medstudy_courses')) || [];
-      return saved.length > 0 ? 0 : 1;
-    } catch {
-      return 1;
-    }
-  });
-
+  // יצירת קורס חדש / הוספת חומר לקורס קיים
+  const [isAddingMaterialMode, setIsAddingMaterialMode] = useState(false);
   const [courseName, setCourseName] = useState('');
-  const [files, setFiles] = useState([]);
+  const [files, setFiles] = useState<any[]>([]);
   const [isParsingFiles, setIsParsingFiles] = useState(false);
   const [deadline, setDeadline] = useState('');
-  const [selectedDays, setSelectedDays] = useState([0, 2, 4]);
-  const [sessionDuration, setSessionDuration] = useState(60);
+  const [selectedDays, setSelectedDays] = useState<number[]>([0, 2, 4]);
+  const [sessionDuration, setSessionDuration] = useState<number>(60);
 
   const [isPlanningAI, setIsPlanningAI] = useState(false);
-  const [draftPlan, setDraftPlan] = useState(null);
+  const [draftPlan, setDraftPlan] = useState<any>(null);
 
-  const [activeSession, setActiveSession] = useState(null);
-  const [studyContent, setStudyContent] = useState(null);
+  // סשן פעיל ולולאת הוראה אינטראקטיבית
+  const [activeSession, setActiveSession] = useState<any>(null);
+  const [studyContent, setStudyContent] = useState<any>(null);
   const [isLoadingAI, setIsLoadingAI] = useState(false);
-  const [activeTab, setActiveTab] = useState('learn');
+  const [activeTab, setActiveTab] = useState<'learn' | 'flashcards' | 'quiz' | 'game'>('learn');
 
-  const [selectedAnswer, setSelectedAnswer] = useState(null);
-  const [isQuizPassed, setIsQuizPassed] = useState(false);
-  const [chatMessages, setChatMessages] = useState([]);
+  // מעקב שלבי הוראה (Mastery Loop)
+  const [unlockedBlockIdx, setUnlockedBlockIdx] = useState<number>(0);
+  const [blockAnswers, setBlockAnswers] = useState<Record<number, number>>({});
+  const [isLessonMastered, setIsLessonMastered] = useState<boolean>(false);
+
+  // טעינה עצלה (On-Demand) לטאבים הנוספים
+  const [isLoadingTabContent, setIsLoadingTabContent] = useState(false);
+
+  // צ'אט מדריך קליני
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
 
+  // כרטיסיות
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
-  const [knownCards, setKnownCards] = useState([]);
-  const [isRegeneratingCards, setIsRegeneratingCards] = useState(false);
+  const [knownCards, setKnownCards] = useState<number[]>([]);
 
-  const [quizAnswers, setQuizAnswers] = useState({});
+  // בוחן
+  const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
-  const [isRegeneratingQuiz, setIsRegeneratingQuiz] = useState(false);
 
+  // משחק Code Blue
   const [gameStarted, setGameStarted] = useState(false);
   const [timeLeft, setTimeLeft] = useState(60);
   const [caseIndex, setCaseIndex] = useState(0);
@@ -338,14 +567,41 @@ export default function App() {
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
+  // טעינה ראשונית מ-IndexedDB (כולל מיגרציה אוטומטית מ-localStorage הישן)
   useEffect(() => {
-    try {
-      localStorage.setItem('medstudy_courses', JSON.stringify(courses));
-      if (activeCourseId) localStorage.setItem('medstudy_active_course', activeCourseId);
-    } catch (e) {
-      console.warn('שגיאת אחסון');
-    }
-  }, [courses, activeCourseId]);
+    (async () => {
+      try {
+        let loaded = await loadCoursesFromIDB();
+        if (loaded.length === 0) {
+          const legacyRaw = localStorage.getItem('medstudy_courses');
+          if (legacyRaw) {
+            loaded = JSON.parse(legacyRaw);
+            if (loaded.length > 0) {
+              await saveCoursesToIDB(loaded);
+              localStorage.removeItem('medstudy_courses'); // פינוי מקום
+            }
+          }
+        }
+        const hydrated = loaded.map((c: any) => ({
+          ...c,
+          schedule: (c.schedule || []).map((s: any) => ({ ...s, rawDate: new Date(s.rawDate) })),
+        }));
+        setCourses(hydrated);
+        if (hydrated.length > 0) setStep(0);
+      } catch (e) {
+        console.error('שגיאה בטעינת מסד הנתונים:', e);
+      } finally {
+        setIsDBLoaded(true);
+      }
+    })();
+  }, []);
+
+  // שמירה אוטומטית ב-IndexedDB
+  useEffect(() => {
+    if (!isDBLoaded) return;
+    saveCoursesToIDB(courses).catch((e) => console.error('שגיאת שמירה ב-IndexedDB:', e));
+    if (activeCourseId) localStorage.setItem('medstudy_active_course', activeCourseId);
+  }, [courses, activeCourseId, isDBLoaded]);
 
   useEffect(() => {
     if (!gameStarted || gameOver || activeTab !== 'game') return;
@@ -357,12 +613,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, [gameStarted, gameOver, timeLeft, activeTab]);
 
-  const saveApiKey = (val) => {
+  const saveApiKey = (val: string) => {
     setApiKey(val);
     localStorage.setItem('medstudy_api_key', val);
   };
 
   const openNewCourseForm = () => {
+    setIsAddingMaterialMode(false);
     setCourseName('');
     setFiles([]);
     setDeadline('');
@@ -372,8 +629,21 @@ export default function App() {
     setStep(1);
   };
 
-  const handleFileUpload = async (e) => {
-    const uploadedFiles = Array.from(e.target.files);
+  // פתיחת מסך הוספת חומר ובניית לו"ז מחדש לקורס קיים
+  const openAddMaterialToCourse = () => {
+    if (!activeCourse) return;
+    setIsAddingMaterialMode(true);
+    setCourseName(activeCourse.title);
+    setFiles([]);
+    setDeadline(activeCourse.deadline);
+    setSelectedDays(activeCourse.selectedDays || [0, 2, 4]);
+    setSessionDuration(activeCourse.sessionDuration || 60);
+    setDraftPlan(null);
+    setStep(1);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const uploadedFiles = Array.from(e.target.files || []);
     setIsParsingFiles(true);
     try {
       const processed = await Promise.all(
@@ -383,26 +653,24 @@ export default function App() {
             id: Math.random().toString(36).substr(2, 9),
             name: file.name,
             size: (file.size / 1024 / 1024).toFixed(2) + ' MB',
-            type: file.name.split('.').pop().toUpperCase(),
+            type: file.name.split('.').pop()?.toUpperCase(),
             text: extractedText || 'לא נמצא טקסט קריא.',
-            wordCount: extractedText ? extractedText.split(/\s+/).length : 0
+            wordCount: extractedText ? extractedText.split(/\s+/).length : 0,
           };
         })
       );
       setFiles((prev) => [...prev, ...processed]);
-    } catch (err) {
+    } catch (err: any) {
       alert('שגיאה בקריאת הקובץ: ' + err.message);
     } finally {
       setIsParsingFiles(false);
     }
   };
 
-  const removeFile = (id) => setFiles(files.filter((f) => f.id !== id));
+  const removeFile = (id: string) => setFiles(files.filter((f) => f.id !== id));
 
-  const toggleDay = (dayId) => {
-    setSelectedDays((prev) =>
-      prev.includes(dayId) ? prev.filter((d) => d !== dayId) : [...prev, dayId]
-    );
+  const toggleDay = (dayId: number) => {
+    setSelectedDays((prev) => (prev.includes(dayId) ? prev.filter((d) => d !== dayId) : [...prev, dayId]));
   };
 
   const generateAIDraftPlan = async () => {
@@ -421,7 +689,7 @@ export default function App() {
       return;
     }
 
-    const studyDates = [];
+    const studyDates: Date[] = [];
     let current = new Date(start);
     while (current <= end) {
       if (selectedDays.includes(current.getDay())) {
@@ -435,64 +703,73 @@ export default function App() {
       return;
     }
 
+    // במצב הוספת חומר לקורס קיים: שומרים את הסשנים שכבר הושלמו, ומאחדים את היתרה + החומר החדש
+    const completedSessions = isAddingMaterialMode && activeCourse
+      ? activeCourse.schedule.filter((s: any) => s.completed)
+      : [];
+
+    const uncompletedOldFiles = isAddingMaterialMode && activeCourse
+      ? activeCourse.schedule
+          .filter((s: any) => !s.completed)
+          .map((s: any) => ({
+            name: `המשך: ${s.topic}`,
+            text: s.textChunk,
+            wordCount: s.textChunk.split(/\s+/).length,
+          }))
+      : [];
+
+    const allFilesToSchedule = [...uncompletedOldFiles, ...files];
+
+    // 1. חלוקה דטרמיניסטית רציפה של 100% מהטקסט ללא חפיפות וללא השמטות
+    const deterministicChunks = splitFilesIntoDeterministicChunks(allFilesToSchedule, studyDates.length);
+
     if (apiKey.trim()) {
       setIsPlanningAI(true);
       try {
-        const aiPlan = await buildAISyllabusPlan(apiKey.trim(), files, studyDates.length, sessionDuration);
-        
-        const plannedSessions = studyDates.map((date, idx) => {
-          const item = aiPlan.sessions[idx] || aiPlan.sessions[aiPlan.sessions.length - 1];
-          const targetFile = files[item.fileIndex] || files[0];
-          const textLen = targetFile.text.length;
-          const startIdx = Math.floor(((item.startPercent || 0) / 100) * textLen);
-          const endIdx = Math.floor(((item.endPercent || 100) / 100) * textLen);
-          const slice = targetFile.text.slice(startIdx, Math.max(endIdx, startIdx + 3500));
-
+        const aiTitles = await enrichChunksWithAITitles(apiKey.trim(), deterministicChunks, sessionDuration);
+        const plannedSessions = deterministicChunks.map((chunk, idx) => {
+          const meta = aiTitles.titles?.find((t: any) => t.index === idx) || aiTitles.titles?.[idx];
           return {
-            title: item.title,
-            fileName: targetFile.name,
-            rationale: item.rationale,
-            textChunk: slice || targetFile.text
+            title: meta?.title || `${chunk.fileName} (חלק ${idx + 1})`,
+            fileName: chunk.fileName,
+            rationale: meta?.rationale || 'חלוקה רציפה מלאה של החומר',
+            textChunk: chunk.textChunk,
+            charCount: chunk.charCount,
           };
         });
 
         setDraftPlan({
-          strategy: aiPlan.pedagogicalStrategy,
+          strategy: aiTitles.pedagogicalStrategy || 'כל החומר חולק במלואו ללא חפיפות על פני הימים הנותרים.',
           dates: studyDates,
-          sessions: plannedSessions
+          sessions: plannedSessions,
+          preservedCompleted: completedSessions,
         });
         setStep(1.5);
-      } catch (err) {
+      } catch (err: any) {
         alert('שגיאה בתכנון מול ה-AI: ' + err.message);
       } finally {
         setIsPlanningAI(false);
       }
     } else {
-      const combinedText = files.map((f) => `--- קובץ: ${f.name} ---\n${f.text}`).join('\n\n');
-      const chunkSize = Math.ceil(combinedText.length / studyDates.length);
-
-      const fallbackSessions = studyDates.map((date, index) => {
-        const fileIndex = Math.floor((index / studyDates.length) * files.length);
-        const currentFile = files[fileIndex];
-        const partNumber = (index % Math.ceil(studyDates.length / files.length)) + 1;
-        return {
-          title: `${currentFile.name.replace(/\.[^/.]+$/, "")} - חלק ${partNumber}`,
-          fileName: currentFile.name,
-          rationale: 'חלוקה לפי קבצים',
-          textChunk: combinedText.slice(index * chunkSize, (index + 1) * chunkSize)
-        };
-      });
+      const fallbackSessions = deterministicChunks.map((chunk, idx) => ({
+        title: `${chunk.fileName} - יחידה ${idx + 1}`,
+        fileName: chunk.fileName,
+        rationale: 'חלוקה רציפה מלאה של הטקסט',
+        textChunk: chunk.textChunk,
+        charCount: chunk.charCount,
+      }));
 
       setDraftPlan({
-        strategy: 'חלוקה לינארית של הקבצים.',
+        strategy: 'חלוקה רציפה של כל החומר ללא איבוד טקסט.',
         dates: studyDates,
-        sessions: fallbackSessions
+        sessions: fallbackSessions,
+        preservedCompleted: completedSessions,
       });
       setStep(1.5);
     }
   };
 
-  const moveDraftSession = (index, direction) => {
+  const moveDraftSession = (index: number, direction: number) => {
     const targetIdx = index + direction;
     if (targetIdx < 0 || targetIdx >= draftPlan.sessions.length) return;
     const updated = [...draftPlan.sessions];
@@ -502,7 +779,7 @@ export default function App() {
     setDraftPlan({ ...draftPlan, sessions: updated });
   };
 
-  const updateDraftSessionTitle = (index, newTitle) => {
+  const updateDraftSessionTitle = (index: number, newTitle: string) => {
     const updated = [...draftPlan.sessions];
     updated[index] = { ...updated[index], title: newTitle };
     setDraftPlan({ ...draftPlan, sessions: updated });
@@ -511,10 +788,11 @@ export default function App() {
   const confirmAndSaveCourse = () => {
     if (!draftPlan) return;
 
-    const finalSchedule = draftPlan.dates.map((date, index) => {
+    const preserved = draftPlan.preservedCompleted || [];
+    const newScheduleItems = draftPlan.dates.map((date: Date, index: number) => {
       const s = draftPlan.sessions[index];
       return {
-        id: index + 1,
+        id: preserved.length + index + 1,
         date: date.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'short' }),
         rawDate: date,
         topic: s.title,
@@ -522,19 +800,43 @@ export default function App() {
         textChunk: s.textChunk,
         duration: sessionDuration,
         completed: false,
-        savedContent: null
+        savedContent: null,
       };
     });
+
+    const combinedSchedule = [...preserved, ...newScheduleItems];
+
+    if (isAddingMaterialMode && activeCourse) {
+      setCourses((prev) =>
+        prev.map((c) =>
+          c.id === activeCourse.id
+            ? {
+                ...c,
+                deadline,
+                selectedDays,
+                sessionDuration,
+                filesCount: c.filesCount + files.length,
+                schedule: combinedSchedule,
+              }
+            : c
+        )
+      );
+      setIsAddingMaterialMode(false);
+      setDraftPlan(null);
+      setStep(2);
+      return;
+    }
 
     const newCourse = {
       id: 'course-' + Date.now(),
       title: courseName.trim() || `קורס סיעוד ${courses.length + 1}`,
       strategy: draftPlan.strategy,
       deadline,
+      selectedDays,
       sessionDuration,
       filesCount: files.length,
-      schedule: finalSchedule,
-      createdAt: new Date().toLocaleDateString('he-IL')
+      schedule: combinedSchedule,
+      createdAt: new Date().toLocaleDateString('he-IL'),
     };
 
     setCourses((prev) => [newCourse, ...prev]);
@@ -543,7 +845,7 @@ export default function App() {
     setStep(2);
   };
 
-  const deleteCourse = (courseId, e) => {
+  const deleteCourse = (courseId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm('האם למחוק קורס זה לצמיתות?')) return;
     const updated = courses.filter((c) => c.id !== courseId);
@@ -556,7 +858,7 @@ export default function App() {
 
   const exportToCalendarTasks = () => {
     if (!activeCourse) return;
-    const formatDateOnly = (dateObj) => {
+    const formatDateOnly = (dateObj: Date) => {
       const y = dateObj.getFullYear();
       const m = String(dateObj.getMonth() + 1).padStart(2, '0');
       const d = String(dateObj.getDate()).padStart(2, '0');
@@ -568,21 +870,23 @@ export default function App() {
       'VERSION:2.0',
       'PRODID:-//MedStudy AI//Nursing Study Tasks//HE',
       'CALSCALE:GREGORIAN',
-      'METHOD:PUBLISH'
+      'METHOD:PUBLISH',
     ];
 
-    activeCourse.schedule.forEach((session) => {
-      const dateStr = formatDateOnly(session.rawDate);
-      icsContent.push(
-        'BEGIN:VEVENT',
-        `UID:event-medstudy-${activeCourse.id}-${session.id}@medstudy.ai`,
-        `DTSTART;VALUE=DATE:${dateStr}`,
-        `DTEND;VALUE=DATE:${dateStr}`,
-        `SUMMARY:🩺 [${activeCourse.title}] ${session.topic} (${session.duration} דק׳)`,
-        `DESCRIPTION:${session.rationale || 'יעד למידה מתוך MedStudy AI'}.`,
-        'END:VEVENT'
-      );
-    });
+    activeCourse.schedule
+      .filter((s: any) => !s.completed)
+      .forEach((session: any) => {
+        const dateStr = formatDateOnly(session.rawDate);
+        icsContent.push(
+          'BEGIN:VEVENT',
+          `UID:event-medstudy-${activeCourse.id}-${session.id}-${Date.now()}@medstudy.ai`,
+          `DTSTART;VALUE=DATE:${dateStr}`,
+          `DTEND;VALUE=DATE:${dateStr}`,
+          `SUMMARY:🩺 [${activeCourse.title}] ${session.topic} (${session.duration} דק׳)`,
+          `DESCRIPTION:${session.rationale || 'יעד למידה מתוך MedStudy AI'}.`,
+          'END:VEVENT'
+        );
+      });
 
     icsContent.push('END:VCALENDAR');
 
@@ -595,11 +899,32 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  const startSession = async (session) => {
+  const updateSessionSavedContent = (sessionId: number, patch: any) => {
+    setStudyContent((prev: any) => {
+      const merged = { ...prev, ...patch };
+      if (activeCourse) {
+        setCourses((cList) =>
+          cList.map((c) =>
+            c.id === activeCourse.id
+              ? {
+                  ...c,
+                  schedule: c.schedule.map((s: any) => (s.id === sessionId ? { ...s, savedContent: merged } : s)),
+                }
+              : c
+          )
+        );
+      }
+      return merged;
+    });
+  };
+
+  // פתיחת סשן: טוען רק את שלבי ההוראה האינטראקטיביים (מהיר וממוקד)
+  const startSession = async (session: any) => {
     setActiveSession(session);
     setActiveTab('learn');
-    setSelectedAnswer(null);
-    setIsQuizPassed(session.completed);
+    setUnlockedBlockIdx(session.completed ? 999 : 0);
+    setBlockAnswers({});
+    setIsLessonMastered(session.completed);
     setCardIndex(0);
     setIsFlipped(false);
     setKnownCards([]);
@@ -611,11 +936,11 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `היי מתן! טענתי את החומר המלא של "${session.topic}" (סשן של ${session.duration} דקות) הכולל 8 כותרות מפורטות. אני כאן לכל שאלה קלינית!`
-      }
+        text: `היי מתן! התחלנו את "${session.topic}" (${session.duration} דקות). נלמד שלב אחרי שלב — ענה על שאלת הבדיקה בסוף כל הסבר כדי לפתוח את השלב הבא ולשחרר את התרגול.`,
+      },
     ]);
 
-    if (session.savedContent) {
+    if (session.savedContent?.blocks) {
       setStudyContent(session.savedContent);
       return;
     }
@@ -623,132 +948,148 @@ export default function App() {
     if (apiKey.trim()) {
       setIsLoadingAI(true);
       try {
-        const aiData = await generateAIStudyMaterial(apiKey.trim(), session.topic, session.textChunk);
-        setStudyContent(aiData);
+        const lessonData = await generateInteractiveLessonBlocks(
+          apiKey.trim(),
+          session.topic,
+          session.textChunk,
+          session.duration
+        );
+        setStudyContent(lessonData);
+        updateSessionSavedContent(session.id, lessonData);
+      } catch (err: any) {
+        alert('שגיאה בבניית השיעור: ' + err.message);
+        setStudyContent(getFallbackLesson(session.topic, session.duration));
+      } finally {
+        setIsLoadingAI(false);
+      }
+    } else {
+      setStudyContent(getFallbackLesson(session.topic, session.duration));
+    }
+  };
 
-        if (activeCourse) {
+  // מענה על שאלת הבדיקה בכל בלוק הוראה (Socratic Mastery Loop)
+  const handleBlockOptionSelect = (blockIdx: number, optIdx: number, correctIdx: number, totalBlocks: number) => {
+    setBlockAnswers((prev) => ({ ...prev, [blockIdx]: optIdx }));
+
+    if (optIdx === correctIdx) {
+      if (blockIdx + 1 < totalBlocks) {
+        setUnlockedBlockIdx((prev) => Math.max(prev, blockIdx + 1));
+      } else {
+        // כל שלבי ההוראה הושלמו בהצלחה!
+        setIsLessonMastered(true);
+        if (activeCourse && activeSession) {
           setCourses((prev) =>
             prev.map((course) =>
               course.id === activeCourse.id
                 ? {
                     ...course,
-                    schedule: course.schedule.map((s) =>
-                      s.id === session.id ? { ...s, savedContent: aiData } : s
-                    )
+                    schedule: course.schedule.map((s: any) =>
+                      s.id === activeSession.id ? { ...s, completed: true } : s
+                    ),
                   }
                 : course
             )
           );
         }
-      } catch (err) {
-        alert('שגיאה בחיבור ל-AI: ' + err.message);
-        setStudyContent(getFallbackContent(session.topic));
-      } finally {
-        setIsLoadingAI(false);
       }
-    } else {
-      setStudyContent(getFallbackContent(session.topic));
+    }
+  };
+
+  // מעבר בין טאבים עם נעילה קשיחה + טעינה עצלה (On-Demand)
+  const handleTabSwitch = async (targetTab: 'learn' | 'flashcards' | 'quiz' | 'game') => {
+    if (targetTab !== 'learn' && !isLessonMastered) {
+      return; // שער נעול קשיח עד השלמת כל שלבי ההוראה
+    }
+
+    setActiveTab(targetTab);
+
+    if (targetTab === 'flashcards' && !studyContent?.flashcards) {
+      if (!apiKey.trim()) {
+        updateSessionSavedContent(activeSession.id, {
+          flashcards: [{ id: 1, front: 'מצב הדגמה', back: 'חבר מפתח API ליצירת כרטיסיות.' }],
+        });
+        return;
+      }
+      setIsLoadingTabContent(true);
+      try {
+        const cards = await generateFlashcardsOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
+        updateSessionSavedContent(activeSession.id, { flashcards: cards });
+      } catch (err: any) {
+        alert('שגיאה ביצירת כרטיסיות: ' + err.message);
+      } finally {
+        setIsLoadingTabContent(false);
+      }
+    }
+
+    if (targetTab === 'quiz' && !studyContent?.chapterQuiz) {
+      if (!apiKey.trim()) {
+        updateSessionSavedContent(activeSession.id, {
+          chapterQuiz: [{ q: 'שאלת הדגמה', opts: ['תשובה נכונה', 'מסיח'], ans: 0, explanation: 'הסבר' }],
+        });
+        return;
+      }
+      setIsLoadingTabContent(true);
+      try {
+        const quiz = await generateQuizOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
+        updateSessionSavedContent(activeSession.id, { chapterQuiz: quiz });
+      } catch (err: any) {
+        alert('שגיאה ביצירת הבוחן: ' + err.message);
+      } finally {
+        setIsLoadingTabContent(false);
+      }
+    }
+
+    if (targetTab === 'game' && !studyContent?.codeBlueCases) {
+      if (!apiKey.trim()) {
+        updateSessionSavedContent(activeSession.id, {
+          codeBlueCases: [{ scenario: 'תרחיש הדגמה', question: 'מה עושים?', options: ['פעולה נכונה', 'טעות'], correct: 0 }],
+        });
+        return;
+      }
+      setIsLoadingTabContent(true);
+      try {
+        const cases = await generateCodeBlueOnly(apiKey.trim(), activeSession.textChunk);
+        updateSessionSavedContent(activeSession.id, { codeBlueCases: cases });
+      } catch (err: any) {
+        alert('שגיאה ביצירת סימולציית Code Blue: ' + err.message);
+      } finally {
+        setIsLoadingTabContent(false);
+      }
     }
   };
 
   const regenerateNewCards = async () => {
-    if (!apiKey.trim()) {
-      alert('יש לחבר מפתח AI בהגדרות כדי לייצר כרטיסיות חדשות.');
-      return;
-    }
-    setIsRegeneratingCards(true);
+    if (!apiKey.trim()) return;
+    setIsLoadingTabContent(true);
     try {
-      const freshCardsPrompt = `צור 10 כרטיסיות שינון קליניות חדשות (flashcards) בעברית אך ורק מתוך טקסט החומר הבא.
-החזר JSON תקין בלבד במבנה מערך (ללא טקסט נוסף):
-[
-  {"id": 1, "front": "מושג חדש 1", "back": "הסבר מפורט 1"},
-  {"id": 2, "front": "מושג חדש 2", "back": "הסבר מפורט 2"},
-  {"id": 3, "front": "מושג חדש 3", "back": "הסבר מפורט 3"},
-  {"id": 4, "front": "מושג חדש 4", "back": "הסבר מפורט 4"},
-  {"id": 5, "front": "מושג חדש 5", "back": "הסבר מפורט 5"},
-  {"id": 6, "front": "מושג חדש 6", "back": "הסבר מפורט 6"},
-  {"id": 7, "front": "מושג חדש 7", "back": "הסבר מפורט 7"},
-  {"id": 8, "front": "מושג חדש 8", "back": "הסבר מפורט 8"},
-  {"id": 9, "front": "מושג חדש 9", "back": "הסבר מפורט 9"},
-  {"id": 10, "front": "מושג חדש 10", "back": "הסבר מפורט 10"}
-]
-טקסט: ${activeSession.textChunk.slice(0, 15000)}`;
-
-      const resText = await callGeminiWithFallback(apiKey.trim(), freshCardsPrompt, true);
-      const newCardsData = JSON.parse(resText);
-      setStudyContent((prev) => {
-        const updated = { ...prev, flashcards: newCardsData };
-        if (activeCourse) {
-          setCourses((cList) =>
-            cList.map((c) =>
-              c.id === activeCourse.id
-                ? {
-                    ...c,
-                    schedule: c.schedule.map((s) => (s.id === activeSession.id ? { ...s, savedContent: updated } : s))
-                  }
-                : c
-            )
-          );
-        }
-        return updated;
-      });
+      const cards = await generateFlashcardsOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
+      updateSessionSavedContent(activeSession.id, { flashcards: cards });
       setCardIndex(0);
       setIsFlipped(false);
       setKnownCards([]);
-    } catch (err) {
-      alert('שגיאה ביצירת כרטיסיות חדשות: ' + err.message);
+    } catch (err: any) {
+      alert('שגיאה: ' + err.message);
     } finally {
-      setIsRegeneratingCards(false);
+      setIsLoadingTabContent(false);
     }
   };
 
   const regenerateNewQuiz = async () => {
-    if (!apiKey.trim()) {
-      alert('יש לחבר מפתח AI בהגדרות כדי לייצר בוחן חדש.');
-      return;
-    }
-    setIsRegeneratingQuiz(true);
+    if (!apiKey.trim()) return;
+    setIsLoadingTabContent(true);
     try {
-      const freshQuizPrompt = `צור בוחן חדש בן 10 שאלות קליניות רב-בררותיות בעברית אך ורק מתוך טקסט החומר הבא. לכל שאלה 4 אפשרויות והסבר קליני מפורט למה התשובה נכונה ומה משמעות השגיאה.
-החזר JSON תקין בלבד במבנה מערך (ללא טקסט נוסף):
-[
-  {
-    "q": "שאלה קלינית",
-    "opts": ["אופציה 1", "אופציה 2", "אופציה 3", "אופציה 4"],
-    "ans": 0,
-    "explanation": "הסבר מפורט"
-  }
-]
-טקסט: ${activeSession.textChunk.slice(0, 15000)}`;
-
-      const resText = await callGeminiWithFallback(apiKey.trim(), freshQuizPrompt, true);
-      const newQuizData = JSON.parse(resText);
-      setStudyContent((prev) => {
-        const updated = { ...prev, chapterQuiz: newQuizData };
-        if (activeCourse) {
-          setCourses((cList) =>
-            cList.map((c) =>
-              c.id === activeCourse.id
-                ? {
-                    ...c,
-                    schedule: c.schedule.map((s) => (s.id === activeSession.id ? { ...s, savedContent: updated } : s))
-                  }
-                : c
-            )
-          );
-        }
-        return updated;
-      });
+      const quiz = await generateQuizOnly(apiKey.trim(), activeSession.textChunk, activeSession.duration);
+      updateSessionSavedContent(activeSession.id, { chapterQuiz: quiz });
       setQuizAnswers({});
       setQuizSubmitted(false);
-    } catch (err) {
-      alert('שגיאה ביצירת בוחן חדש: ' + err.message);
+    } catch (err: any) {
+      alert('שגיאה: ' + err.message);
     } finally {
-      setIsRegeneratingQuiz(false);
+      setIsLoadingTabContent(false);
     }
   };
 
-  const handleSendMessage = async (e) => {
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
     const userMsg = chatInput;
@@ -756,12 +1097,10 @@ export default function App() {
     setChatInput('');
 
     if (!apiKey.trim()) {
-      setTimeout(() => {
-        setChatMessages((prev) => [
-          ...prev,
-          { role: 'ai', text: 'כדי שאוכל לענות מתוך הקבצים שלך, הזן מפתח Gemini API בהגדרות למעלה.' }
-        ]);
-      }, 400);
+      setChatMessages((prev) => [
+        ...prev,
+        { role: 'ai', text: 'כדי שאוכל לענות מתוך הקבצים שלך, הזן מפתח Gemini API בהגדרות למעלה.' },
+      ]);
       return;
     }
 
@@ -769,7 +1108,7 @@ export default function App() {
     try {
       const reply = await callGeminiWithFallback(
         apiKey.trim(),
-        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית ומעמיקה לשאלת הסטודנט על בסיס חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 20000)}\n\nשאלת הסטודנט: ${userMsg}`,
+        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית וממוקדת לשאלת הסטודנט על בסיס חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 30000)}\n\nשאלת הסטודנט: ${userMsg}`,
         false
       );
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה.' }]);
@@ -777,25 +1116,6 @@ export default function App() {
       setChatMessages((prev) => [...prev, { role: 'ai', text: 'שגיאת תקשורת מול ה-AI.' }]);
     } finally {
       setIsChatLoading(false);
-    }
-  };
-
-  const handleCheckUnderstanding = (idx, correctIdx) => {
-    setSelectedAnswer(idx);
-    if (idx === correctIdx && activeCourse) {
-      setIsQuizPassed(true);
-      setCourses((prev) =>
-        prev.map((course) =>
-          course.id === activeCourse.id
-            ? {
-                ...course,
-                schedule: course.schedule.map((s) =>
-                  s.id === activeSession.id ? { ...s, completed: true } : s
-                )
-              }
-            : course
-        )
-      );
     }
   };
 
@@ -808,7 +1128,7 @@ export default function App() {
     setStreak(0);
   };
 
-  const handleGameAnswer = (selectedIdx, correctIdx, totalCases) => {
+  const handleGameAnswer = (selectedIdx: number, correctIdx: number, totalCases: number) => {
     if (selectedIdx === correctIdx) {
       setStreak((s) => s + 1);
       setPatientStability((p) => Math.min(100, p + 10));
@@ -837,7 +1157,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">MedStudy AI - Nursing</h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400">מערכת למידה מתקדמת לתואר בסיעוד</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">מערכת הוראה קלינית אינטראקטיבית</p>
           </div>
         </div>
 
@@ -884,10 +1204,10 @@ export default function App() {
           <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="text-sm">
               <p className="font-bold flex items-center gap-1.5 text-blue-400">
-                <Key size={16} /> חיבור מנוע Google Gemini AI
+                <Key size={16} /> חיבור מנוע Google Gemini AI (נשמר ב-IndexedDB)
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                הדבק מפתח API כדי לאפשר ניתוח עומק של המצגות והסיכומים לסיעוד.
+                הדבק מפתח API לשימוש אישי, או הגדר <code className="text-blue-300">VITE_USE_PROXY=true</code> בשרת.
               </p>
             </div>
             <div className="flex w-full sm:w-auto gap-2">
@@ -910,13 +1230,15 @@ export default function App() {
       )}
 
       <main className="max-w-6xl mx-auto p-6">
+        {/* שלב 0: רשימת קורסים */}
         {step === 0 && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div>
                 <h2 className="text-2xl font-bold">הקורסים שלי בסיעוד</h2>
-                <p className="text-sm text-slate-500 dark:text-slate-400">
-                  ניהול קורסים, מעקב התקדמות וניתוח חומרי לימוד קליניים
+                <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
+                  <ShieldCheck size={15} className="text-emerald-500" />
+                  אחסון מורחב פעיל (IndexedDB) — 100% מחומרי הלימוד נשמרים ללא קיצוץ
                 </p>
               </div>
               <button
@@ -930,7 +1252,7 @@ export default function App() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
               {courses.map((course) => {
-                const completedCount = course.schedule.filter((s) => s.completed).length;
+                const completedCount = course.schedule.filter((s: any) => s.completed).length;
                 const totalCount = course.schedule.length;
                 const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
@@ -982,16 +1304,19 @@ export default function App() {
           </div>
         )}
 
+        {/* שלב 1: יצירת קורס חדש או הוספת חומר לקורס קיים */}
         {step === 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4">
             <div className="lg:col-span-6 space-y-6">
               <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                 <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
                   <Upload size={20} className="text-blue-500" />
-                  1. העלאת חומרי לימוד לקורס
+                  {isAddingMaterialMode ? `הוספת חומרי לימוד ל-${courseName}` : '1. העלאת חומרי לימוד לקורס'}
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-                  העלה מצגות, סיכומים ונוהלי טיפול לקבלת חומר מלא ללמידה מעמיקה
+                  {isAddingMaterialMode
+                    ? 'הסשנים שכבר השלמת יישמרו. החומר החדש והסשנים שטרם נלמדו ייפרסו מחדש על הימים שנותרו עד המבחן.'
+                    : 'כל הטקסט מהקבצים יישמר ויחולק במלואו ללא חפיפות או קיצוץ שקט.'}
                 </p>
 
                 <label className="border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-blue-500 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer transition bg-slate-50/50 dark:bg-slate-950/50">
@@ -1001,9 +1326,9 @@ export default function App() {
                     <Upload size={32} className="text-blue-500 mb-3" />
                   )}
                   <span className="font-medium text-sm">
-                    {isParsingFiles ? 'מחלץ טקסט מהקבצים...' : 'לחץ לבחירת קבצים או גרור לכאן'}
+                    {isParsingFiles ? 'מחלץ טקסט מלא מהקבצים...' : 'לחץ לבחירת קבצים או גרור לכאן'}
                   </span>
-                  <span className="text-xs text-slate-400 mt-1">PDF, Word, מצגות וטקסט</span>
+                  <span className="text-xs text-slate-400 mt-1">PDF, Word, מצגות PowerPoint וטקסט</span>
                   <input
                     type="file"
                     multiple
@@ -1015,7 +1340,9 @@ export default function App() {
 
                 {files.length > 0 && (
                   <div className="mt-5 space-y-2.5">
-                    <h3 className="text-xs font-semibold uppercase text-slate-400">קבצים שנקראו ({files.length})</h3>
+                    <h3 className="text-xs font-semibold uppercase text-slate-400">
+                      קבצים שנקראו ({files.length} • {files.reduce((a, b) => a + b.wordCount, 0).toLocaleString()} מילים)
+                    </h3>
                     {files.map((file) => (
                       <div key={file.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-100 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/50">
                         <div className="flex items-center gap-3 overflow-hidden">
@@ -1040,26 +1367,28 @@ export default function App() {
                 <div>
                   <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
                     <Calendar size={20} className="text-blue-500" />
-                    2. הגדרות הקורס ותכנון AI
+                    2. הגדרות זמן ותעדוף מבחן
                   </h2>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    קביעת דדליין, ימי לימוד ומשך סשן
+                    אורך הסשן קובע אוטומטית את עומק ההסבר, מספר שלבי ההוראה וסינון החומר למבחן
                   </p>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium mb-2">שם הקורס (למשל: בסיס הסיעוד / קרדיולוגיה)</label>
-                  <input
-                    type="text"
-                    value={courseName}
-                    onChange={(e) => setCourseName(e.target.value)}
-                    placeholder="הזן שם קורס..."
-                    className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
+                {!isAddingMaterialMode && (
+                  <div>
+                    <label className="block text-sm font-medium mb-2">שם הקורס</label>
+                    <input
+                      type="text"
+                      value={courseName}
+                      onChange={(e) => setCourseName(e.target.value)}
+                      placeholder="למשל: פרמקולוגיה / קרדיולוגיה / מיקרוביולוגיה..."
+                      className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-transparent focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                  </div>
+                )}
 
                 <div>
-                  <label className="block text-sm font-medium mb-2">תאריך יעד לבחינה / סיום החומר</label>
+                  <label className="block text-sm font-medium mb-2">תאריך יעד לבחינה</label>
                   <input
                     type="date"
                     value={deadline}
@@ -1094,21 +1423,27 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-medium mb-2 flex items-center justify-between">
-                    <span>משך כל סשן למידה</span>
+                    <span>משך כל סשן (משפיע על היקף התוכן וסינון המבחן)</span>
                     <span className="text-blue-500 font-bold">{sessionDuration} דקות</span>
                   </label>
                   <div className="grid grid-cols-4 gap-2">
-                    {[30, 45, 60, 90].map((mins) => (
+                    {[
+                      { mins: 30, desc: '3 שלבים • High-Yield' },
+                      { mins: 45, desc: '4 שלבים • ממוקד' },
+                      { mins: 60, desc: '5 שלבים • מלא' },
+                      { mins: 90, desc: '7 שלבים • מעמיק' },
+                    ].map((opt) => (
                       <button
-                        key={mins}
-                        onClick={() => setSessionDuration(mins)}
-                        className={`py-2 rounded-xl text-sm font-medium border transition ${
-                          sessionDuration === mins
+                        key={opt.mins}
+                        onClick={() => setSessionDuration(opt.mins)}
+                        className={`p-2 rounded-xl text-center border transition ${
+                          sessionDuration === opt.mins
                             ? 'bg-blue-600/10 border-blue-500 text-blue-500'
                             : 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                       >
-                        {mins} דק׳
+                        <div className="text-sm font-bold">{opt.mins} דק׳</div>
+                        <div className="text-[10px] opacity-80 mt-0.5">{opt.desc}</div>
                       </button>
                     ))}
                   </div>
@@ -1122,12 +1457,12 @@ export default function App() {
                   {isPlanningAI ? (
                     <>
                       <Loader2 size={20} className="animate-spin" />
-                      <span>מתכנן סילבוס קליני...</span>
+                      <span>מחלק את כל החומר ללא חפיפות...</span>
                     </>
                   ) : (
                     <>
                       <Brain size={20} />
-                      <span>בנה תוכנית למידה חכמה</span>
+                      <span>{isAddingMaterialMode ? 'בנה לו"ז מעודכן ליתרת הזמן' : 'בנה תוכנית למידה מדורגת'}</span>
                     </>
                   )}
                 </button>
@@ -1136,41 +1471,40 @@ export default function App() {
           </div>
         )}
 
+        {/* שלב 1.5: בקרת סילבוס */}
         {step === 1.5 && draftPlan && (
           <div className="space-y-6 mt-4 max-w-4xl mx-auto">
             <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/40 space-y-4 shadow-sm">
               <div className="flex flex-wrap justify-between items-start gap-4">
                 <div>
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-blue-500/10 text-blue-500 flex items-center gap-1.5 w-fit">
-                    <Brain size={14} /> בקרת סילבוס
+                    <Brain size={14} /> בקרת סילבוס (100% כיסוי חומר • 0% חפיפה)
                   </span>
-                  <h2 className="text-2xl font-bold mt-2">סדר הלמידה לקורס</h2>
+                  <h2 className="text-2xl font-bold mt-2">
+                    {isAddingMaterialMode ? 'תוכנית מעודכנת ליתרת הימים' : 'סדר הלמידה לקורס'}
+                  </h2>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setStep(1)}
-                    className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800"
-                  >
-                    חזרה
-                  </button>
-                  <button
-                    onClick={generateAIDraftPlan}
-                    disabled={isPlanningAI}
-                    className="px-4 py-2.5 rounded-xl border border-blue-500/40 text-blue-500 text-sm font-semibold hover:bg-blue-500/10 flex items-center gap-1.5"
-                  >
-                    <RotateCcw size={16} className={isPlanningAI ? 'animate-spin' : ''} />
-                    תכנן מחדש
-                  </button>
-                </div>
+                <button
+                  onClick={() => setStep(1)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  חזרה לעריכת קבצים
+                </button>
               </div>
 
+              {draftPlan.preservedCompleted?.length > 0 && (
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                  ✓ נשמרו {draftPlan.preservedCompleted.length} סשנים שכבר השלמת בעבר. להלן הפריסה החדשה של החומר שנותר + הקבצים החדשים:
+                </div>
+              )}
+
               <div className="p-4 rounded-xl bg-blue-500/5 border border-blue-500/20 text-sm text-slate-700 dark:text-slate-300">
-                <strong className="text-blue-500 block mb-1">היגיון פדגוגי:</strong>
+                <strong className="text-blue-500 block mb-1">אסטרטגיית למידה:</strong>
                 {draftPlan.strategy}
               </div>
 
               <div className="space-y-3">
-                {draftPlan.sessions.map((item, idx) => (
+                {draftPlan.sessions.map((item: any, idx: number) => (
                   <div
                     key={idx}
                     className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4"
@@ -1186,6 +1520,8 @@ export default function App() {
                           </span>
                           <span>•</span>
                           <span>מקור: {item.fileName}</span>
+                          <span>•</span>
+                          <span>{item.charCount?.toLocaleString()} תווים</span>
                         </div>
                         <input
                           type="text"
@@ -1224,12 +1560,13 @@ export default function App() {
                 className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition text-base"
               >
                 <Check size={20} />
-                אשר תוכנית וצור לוח זמנים ({draftPlan.sessions.length} סשנים)
+                אשר ושמור לוח זמנים ({draftPlan.sessions.length} סשנים)
               </button>
             </div>
           </div>
         )}
 
+        {/* שלב 2: לוח זמנים של קורס */}
         {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -1239,10 +1576,17 @@ export default function App() {
                   <h2 className="text-xl font-bold">{activeCourse.title}</h2>
                 </div>
                 <p className="text-sm text-slate-500 dark:text-slate-400">
-                  {activeCourse.schedule.length} משימות למידה • הושלמו {activeCourse.schedule.filter(s => s.completed).length}/{activeCourse.schedule.length}
+                  {activeCourse.schedule.length} משימות למידה • הושלמו {activeCourse.schedule.filter((s: any) => s.completed).length}/{activeCourse.schedule.length}
                 </p>
               </div>
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-2.5">
+                <button
+                  onClick={openAddMaterialToCourse}
+                  className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/40 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 text-sm font-semibold flex items-center gap-2 transition"
+                >
+                  <FilePlus2 size={16} />
+                  הוסף חומר ועדכן לו"ז
+                </button>
                 <button
                   onClick={exportToCalendarTasks}
                   className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium flex items-center gap-2 shadow-sm transition"
@@ -1250,18 +1594,11 @@ export default function App() {
                   <Download size={16} />
                   ייצא ליומן גוגל (.ics)
                 </button>
-                <button
-                  onClick={openNewCourseForm}
-                  className="px-4 py-2.5 rounded-xl bg-blue-600/10 text-blue-500 hover:bg-blue-600/20 text-sm font-semibold flex items-center gap-1.5 transition"
-                >
-                  <Plus size={16} />
-                  קורס נוסף
-                </button>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {activeCourse.schedule.map((session) => (
+              {activeCourse.schedule.map((session: any) => (
                 <div
                   key={session.id}
                   className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition flex items-center justify-between gap-3 shadow-sm ${
@@ -1285,7 +1622,7 @@ export default function App() {
                     )}
                     <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400 pt-0.5">
                       <Clock size={14} />
-                      <span>{session.duration} דקות למידה</span>
+                      <span>{session.duration} דקות ({getDurationConfig(session.duration).blocksCount} שלבי הוראה)</span>
                     </div>
                   </div>
 
@@ -1304,343 +1641,447 @@ export default function App() {
           </div>
         )}
 
+        {/* שלב 3: סביבת למידה אינטראקטיבית עם שערים נעולים */}
         {step === 3 && activeSession && (
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
               <Loader2 size={44} className="text-blue-500 animate-spin" />
-              <h3 className="text-lg font-bold">המרצה הקליני מייצר 8 כותרות מפורטות (10+ משפטים לכל כותרת)...</h3>
-              <p className="text-sm text-slate-400">מכין סיכום עשיר, 10 כרטיסיות שינון ובוחן בן 10 שאלות עם ניתוח שגיאות</p>
+              <h3 className="text-lg font-bold">המרצה הקליני בונה שיעור אינטראקטיבי מדורג...</h3>
+              <p className="text-sm text-slate-400">מתאים את היקף ההסברים ל-{activeSession.duration} דקות ומכין שאלות בדיקה לכל שלב</p>
             </div>
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
               <div className="lg:col-span-7 space-y-5">
+                {/* סרגל ניווט עם נעילה קשיחה של טאבי התרגול עד סיום השיעור */}
                 <div className="grid grid-cols-4 gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                   {[
-                    { id: 'learn', label: 'לימוד הפרק', icon: BookOpen },
-                    { id: 'flashcards', label: `כרטיסיות (${studyContent.flashcards?.length || 10})`, icon: Layers },
-                    { id: 'quiz', label: `בוחן (${studyContent.chapterQuiz?.length || 10})`, icon: Award },
-                    { id: 'game', label: 'Code Blue', icon: Activity },
+                    { id: 'learn' as const, label: 'שיעור מודרך', icon: BookOpen, locked: false },
+                    { id: 'flashcards' as const, label: 'כרטיסיות', icon: Layers, locked: !isLessonMastered },
+                    { id: 'quiz' as const, label: 'בוחן מסכם', icon: Award, locked: !isLessonMastered },
+                    { id: 'game' as const, label: 'Code Blue', icon: Activity, locked: !isLessonMastered },
                   ].map((tab) => {
                     const Icon = tab.icon;
                     const active = activeTab === tab.id;
                     return (
                       <button
                         key={tab.id}
-                        onClick={() => setActiveTab(tab.id)}
+                        disabled={tab.locked}
+                        onClick={() => handleTabSwitch(tab.id)}
+                        title={tab.locked ? 'השלם את כל שלבי השיעור כדי לפתוח טאב זה' : ''}
                         className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 transition ${
-                          active
+                          tab.locked
+                            ? 'opacity-45 cursor-not-allowed text-slate-400'
+                            : active
                             ? tab.id === 'game' ? 'bg-rose-600 text-white shadow-sm' : 'bg-blue-600 text-white shadow-sm'
                             : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
                         }`}
                       >
-                        <Icon size={16} />
+                        {tab.locked ? <Lock size={14} /> : <Icon size={16} />}
                         <span>{tab.label}</span>
                       </button>
                     );
                   })}
                 </div>
 
+                {!isLessonMastered && (
+                  <div className="px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-600 dark:text-amber-400 flex items-center gap-2">
+                    <Lock size={14} className="shrink-0" />
+                    <span>
+                      <strong>למידה מבוקרת (Mastery Gate):</strong> טאבי הכרטיסיות, הבוחן ו-Code Blue ייפתחו אוטומטית מיד כשתשלים את כל {studyContent.blocks?.length} שלבי השיעור למטה.
+                    </span>
+                  </div>
+                )}
+
+                {/* טאב 1: לולאת הוראה אינטראקטיבית שלב-אחר-שלב */}
                 {activeTab === 'learn' && (
-                  <>
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
-                      <div className="border-b border-slate-200 dark:border-slate-800 pb-4">
-                        <span className="text-xs font-semibold text-blue-500">{activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות למידה</span>
-                        <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
+                  <div className="space-y-5">
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
+                      <span className="text-xs font-semibold text-blue-500">
+                        {activeCourse?.title} • שלב #{activeSession.id} • {activeSession.duration} דקות
+                      </span>
+                      <h2 className="text-2xl font-bold mt-1">{activeSession.topic}</h2>
+                      <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                        <span>התקדמות בשיעור:</span>
+                        <span className="font-bold text-blue-500">
+                          {Math.min(unlockedBlockIdx + (isLessonMastered ? 1 : 0), studyContent.blocks?.length || 0)} / {studyContent.blocks?.length || 0} שלבים
+                        </span>
                       </div>
-
-                      <div className="space-y-6">
-                        <h3 className="font-bold text-lg text-blue-500 border-b border-slate-100 dark:border-slate-800 pb-2">
-                          📚 חומר לימוד מפורט (8 כותרות, 10+ משפטים בכל כותרת)
-                        </h3>
-
-                        {studyContent.sections?.map((sec, idx) => (
-                          <div key={idx} className="space-y-2.5 p-4 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                            <h4 className="font-bold text-base text-blue-600 dark:text-blue-400 flex items-center gap-2">
-                              <span className="bg-blue-600 text-white text-xs w-6 h-6 rounded-lg flex items-center justify-center shrink-0">{idx + 1}</span>
-                              {sec.title}
-                            </h4>
-                            <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">
-                              {sec.content}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-
-                      {studyContent.comparisonTable?.length > 0 && (
-                        <div className="overflow-x-auto pt-4">
-                          <h3 className="font-semibold text-base text-blue-500 mb-2">טבלת השוואה והערכה קלינית</h3>
-                          <table className="w-full text-sm text-right border-collapse rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
-                            <thead className="bg-slate-100 dark:bg-slate-800 text-xs uppercase">
-                              <tr>
-                                <th className="p-3">פרמטר</th>
-                                <th className="p-3 text-blue-500">ממצא א׳</th>
-                                <th className="p-3 text-amber-500">ממצא ב׳</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                              {studyContent.comparisonTable.map((row, i) => (
-                                <tr key={i}>
-                                  <td className="p-3 font-medium">{row.param}</td>
-                                  <td className="p-3 text-slate-600 dark:text-slate-300">{row.acute}</td>
-                                  <td className="p-3 text-slate-600 dark:text-slate-300">{row.chronic}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
                     </div>
 
-                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/30 space-y-4 shadow-sm">
-                      <div className="flex items-center gap-2 text-blue-500 font-bold">
-                        <HelpCircle size={20} />
-                        <h3>וידוא הבנה ראשוני (לסימון השלמת המשימה)</h3>
-                      </div>
-                      <p className="text-sm font-medium">{studyContent.comprehensionCheck.question}</p>
+                    {studyContent.blocks?.map((block: any, bIdx: number) => {
+                      if (bIdx > unlockedBlockIdx) return null; // שלבים עתידיים מוסתרים עד מענה נכון!
 
-                      <div className="space-y-2">
-                        {studyContent.comprehensionCheck.options.map((opt, idx) => {
-                          const isSelected = selectedAnswer === idx;
-                          const isCorrect = idx === studyContent.comprehensionCheck.correctIndex;
-                          let btnStyle = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
-                          if (isSelected) {
-                            btnStyle = isCorrect
-                              ? 'bg-emerald-500/10 border-emerald-500 text-emerald-500 font-semibold'
-                              : 'bg-red-500/10 border-red-500 text-red-500';
-                          }
-                          return (
-                            <button
-                              key={idx}
-                              onClick={() => handleCheckUnderstanding(idx, studyContent.comprehensionCheck.correctIndex)}
-                              className={`w-full text-right p-3.5 rounded-xl border text-sm transition flex items-center justify-between ${btnStyle}`}
-                            >
-                              <span>{opt}</span>
-                              {isSelected && (isCorrect ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />)}
-                            </button>
-                          );
-                        })}
-                      </div>
+                      const chosenOpt = blockAnswers[bIdx];
+                      const hasAnswered = chosenOpt !== undefined;
+                      const isCorrect = chosenOpt === block.correctIndex;
 
-                      {isQuizPassed && (
-                        <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-500 text-sm font-medium flex items-center justify-between">
-                          <span>מצוין! סשן זה סומן כהושלם. מומלץ לעבור לתרגול 10 הכרטיסיות ובוחן 10 השאלות.</span>
+                      return (
+                        <div
+                          key={bIdx}
+                          className={`bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 transition space-y-4 shadow-sm ${
+                            isCorrect || isLessonMastered
+                              ? 'border-emerald-500/40'
+                              : 'border-blue-500/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <h3 className="font-bold text-base text-blue-600 dark:text-blue-400 flex items-center gap-2">
+                              <span className="bg-blue-600 text-white text-xs w-6 h-6 rounded-lg flex items-center justify-center shrink-0">
+                                {bIdx + 1}
+                              </span>
+                              {block.title}
+                            </h3>
+                            {(isCorrect || isLessonMastered) && (
+                              <span className="text-xs font-bold text-emerald-500 flex items-center gap-1">
+                                <CheckCircle2 size={15} /> הובן
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 whitespace-pre-line">
+                            {block.explanation}
+                          </p>
+
+                          {/* שאלת בדיקה אינטראקטיבית בסוף כל בלוק */}
+                          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                            <p className="text-sm font-bold flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
+                              <HelpCircle size={16} className="text-blue-500 shrink-0" />
+                              {block.checkQuestion}
+                            </p>
+
+                            <div className="space-y-2">
+                              {block.options.map((opt: string, oIdx: number) => {
+                                const selected = chosenOpt === oIdx;
+                                const right = oIdx === block.correctIndex;
+                                let btnStyle = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+                                if (selected) {
+                                  btnStyle = right
+                                    ? 'bg-emerald-500/15 border-emerald-500 text-emerald-600 dark:text-emerald-400 font-semibold'
+                                    : 'bg-red-500/15 border-red-500 text-red-600 dark:text-red-400';
+                                }
+                                return (
+                                  <button
+                                    key={oIdx}
+                                    onClick={() =>
+                                      handleBlockOptionSelect(bIdx, oIdx, block.correctIndex, studyContent.blocks.length)
+                                    }
+                                    className={`w-full text-right p-3 rounded-xl border text-sm transition flex items-center justify-between ${btnStyle}`}
+                                  >
+                                    <span>{opt}</span>
+                                    {selected && (right ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />)}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {/* משוב הוראה מיידי מה-AI על הבחירה */}
+                            {hasAnswered && (
+                              <div
+                                className={`p-3.5 rounded-xl text-xs leading-relaxed ${
+                                  isCorrect
+                                    ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                                    : 'bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-300'
+                                }`}
+                              >
+                                <strong className="block mb-0.5">
+                                  {isCorrect ? '✓ משוב המרצה הקליני:' : '✗ שים לב — נסה שוב:'}
+                                </strong>
+                                {block.feedbackByOption?.[chosenOpt]}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* טבלת השוואה + הודעת סיום שיעור */}
+                    {isLessonMastered && (
+                      <div className="bg-emerald-500/10 border-2 border-emerald-500/40 p-6 rounded-2xl space-y-4">
+                        <div className="flex flex-wrap items-center justify-between gap-4">
+                          <div>
+                            <h3 className="font-bold text-lg text-emerald-600 dark:text-emerald-400">
+                              כל שלבי השיעור הושלמו בהצלחה! 🎉
+                            </h3>
+                            <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                              כעת נפתחו עבורך כרטיסיות השינון, הבוחן המסכם וסימולציית Code Blue.
+                            </p>
+                          </div>
                           <button
-                            onClick={() => setActiveTab('flashcards')}
-                            className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700"
+                            onClick={() => handleTabSwitch('flashcards')}
+                            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold transition"
                           >
-                            עבור לכרטיסיות
+                            המשך לכרטיסיות שינון ←
+                          </button>
+                        </div>
+
+                        {studyContent.comparisonTable?.length > 0 && (
+                          <div className="overflow-x-auto pt-2">
+                            <table className="w-full text-sm text-right border-collapse rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+                              <thead className="bg-slate-100 dark:bg-slate-800 text-xs uppercase">
+                                <tr>
+                                  <th className="p-3">פרמטר</th>
+                                  <th className="p-3 text-blue-500">ממצא א׳</th>
+                                  <th className="p-3 text-amber-500">ממצא ב׳</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                                {studyContent.comparisonTable.map((row: any, i: number) => (
+                                  <tr key={i}>
+                                    <td className="p-3 font-medium">{row.param}</td>
+                                    <td className="p-3 text-slate-600 dark:text-slate-300">{row.acute}</td>
+                                    <td className="p-3 text-slate-600 dark:text-slate-300">{row.chronic}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* טאב 2: כרטיסיות (נטען On-Demand) */}
+                {activeTab === 'flashcards' && (
+                  isLoadingTabContent || !studyContent.flashcards ? (
+                    <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
+                      <Loader2 size={32} className="text-blue-500 animate-spin" />
+                      <p className="text-sm font-semibold">מייצר כרטיסיות שינון ממוקדות...</p>
+                    </div>
+                  ) : (
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
+                      <div className="flex justify-between items-center">
+                        <h3 className="font-bold text-lg">
+                          כרטיסיות שינון - {cardIndex + 1} / {studyContent.flashcards.length}
+                        </h3>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={regenerateNewCards}
+                            className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
+                          >
+                            <RotateCcw size={14} /> צור חדשות
+                          </button>
+                          <span className="text-xs bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full font-semibold">
+                            נשלטות: {knownCards.length}/{studyContent.flashcards.length}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        onClick={() => setIsFlipped(!isFlipped)}
+                        className="min-h-[260px] rounded-2xl border-2 border-blue-500/30 bg-slate-50 dark:bg-slate-950 p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-500 transition select-none shadow-inner"
+                      >
+                        <span className="text-xs uppercase tracking-wider text-blue-500 font-bold mb-3">
+                          {isFlipped ? 'הסבר קליני' : 'מושג / שאלה (לחץ להיפוך)'}
+                        </span>
+                        <p className="text-lg font-semibold leading-relaxed">
+                          {isFlipped ? studyContent.flashcards[cardIndex]?.back : studyContent.flashcards[cardIndex]?.front}
+                        </p>
+                      </div>
+
+                      <div className="flex justify-between items-center gap-3">
+                        <button
+                          onClick={() => {
+                            setIsFlipped(false);
+                            setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
+                          }}
+                          className="flex-1 py-3 rounded-xl border border-amber-500/40 text-amber-500 font-semibold text-sm hover:bg-amber-500/10 transition"
+                        >
+                          צריך לחזור שוב
+                        </button>
+                        <button
+                          onClick={() => {
+                            const currentId = studyContent.flashcards[cardIndex]?.id || cardIndex;
+                            if (!knownCards.includes(currentId)) setKnownCards([...knownCards, currentId]);
+                            setIsFlipped(false);
+                            setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
+                          }}
+                          className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm transition"
+                        >
+                          יודע היטב ✓
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
+
+                {/* טאב 3: בוחן מסכם (נטען On-Demand + תשובות מעורבבות) */}
+                {activeTab === 'quiz' && (
+                  isLoadingTabContent || !studyContent.chapterQuiz ? (
+                    <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
+                      <Loader2 size={32} className="text-blue-500 animate-spin" />
+                      <p className="text-sm font-semibold">בונה שאלות בחינה קליניות ומערבב אפשרויות...</p>
+                    </div>
+                  ) : (
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
+                      <div className="flex justify-between items-center">
+                        <h3 className="font-bold text-lg">בוחן אמריקאי ({studyContent.chapterQuiz.length} שאלות)</h3>
+                        <button
+                          onClick={regenerateNewQuiz}
+                          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
+                        >
+                          <RotateCcw size={14} /> שאלות חדשות
+                        </button>
+                      </div>
+
+                      {studyContent.chapterQuiz.map((item: any, qIdx: number) => (
+                        <div key={qIdx} className="space-y-3 pb-5 border-b border-slate-200 dark:border-slate-800 last:border-0">
+                          <p className="font-semibold text-sm">{qIdx + 1}. {item.q}</p>
+                          <div className="space-y-1.5">
+                            {item.opts.map((opt: string, oIdx: number) => {
+                              const chosen = quizAnswers[qIdx] === oIdx;
+                              const isCorrect = item.ans === oIdx;
+                              let style = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
+                              if (quizSubmitted) {
+                                if (isCorrect) style = 'bg-emerald-500/15 border-emerald-500 text-emerald-500 font-semibold';
+                                else if (chosen) style = 'bg-red-500/15 border-red-500 text-red-500';
+                              } else if (chosen) {
+                                style = 'border-blue-500 bg-blue-500/10 text-blue-500';
+                              }
+                              return (
+                                <button
+                                  key={oIdx}
+                                  disabled={quizSubmitted}
+                                  onClick={() => setQuizAnswers({ ...quizAnswers, [qIdx]: oIdx })}
+                                  className={`w-full text-right p-3 rounded-xl border text-sm transition ${style}`}
+                                >
+                                  {opt}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {quizSubmitted && (
+                            <div
+                              className={`p-3.5 rounded-xl text-xs space-y-1 mt-2 ${
+                                quizAnswers[qIdx] === item.ans
+                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30'
+                              }`}
+                            >
+                              <p className="font-bold">
+                                {quizAnswers[qIdx] === item.ans ? '✓ תשובה נכונה!' : '✗ טעות בתשובה.'}
+                              </p>
+                              <p className="leading-relaxed">
+                                <strong className="font-semibold">הסבר קליני:</strong> {item.explanation}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+
+                      {!quizSubmitted ? (
+                        <button
+                          onClick={() => setQuizSubmitted(true)}
+                          className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-lg shadow-blue-600/20"
+                        >
+                          הגש בוחן וקבל משוב מלא
+                        </button>
+                      ) : (
+                        <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex justify-between items-center">
+                          <span className="font-bold text-blue-500">
+                            ציון: {studyContent.chapterQuiz.filter((q: any, i: number) => quizAnswers[i] === q.ans).length} מתוך {studyContent.chapterQuiz.length}
+                          </span>
+                          <button
+                            onClick={() => {
+                              setQuizAnswers({});
+                              setQuizSubmitted(false);
+                            }}
+                            className="text-xs underline flex items-center gap-1 font-semibold"
+                          >
+                            <RotateCcw size={14} /> נסה שוב
                           </button>
                         </div>
                       )}
                     </div>
-                  </>
+                  )
                 )}
 
-                {activeTab === 'flashcards' && (
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
-                    <div className="flex justify-between items-center">
-                      <h3 className="font-bold text-lg">כרטיסיות שינון (10 כרטיסיות) - {cardIndex + 1} / {studyContent.flashcards.length}</h3>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={regenerateNewCards}
-                          disabled={isRegeneratingCards}
-                          className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
-                        >
-                          <RotateCcw size={14} className={isRegeneratingCards ? 'animate-spin' : ''} />
-                          צור 10 כרטיסיות חדשות
-                        </button>
-                        <span className="text-xs bg-emerald-500/10 text-emerald-500 px-3 py-1 rounded-full font-semibold">
-                          נשלטות: {knownCards.length}/{studyContent.flashcards.length}
-                        </span>
-                      </div>
+                {/* טאב 4: Code Blue (נטען On-Demand) */}
+                {activeTab === 'game' && (
+                  isLoadingTabContent || !studyContent.codeBlueCases ? (
+                    <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
+                      <Loader2 size={32} className="text-rose-500 animate-spin" />
+                      <p className="text-sm font-semibold">מכין תרחישי חירום קליניים...</p>
                     </div>
+                  ) : (
+                    <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-rose-500/40 space-y-6 shadow-sm">
+                      {!gameStarted ? (
+                        <div className="text-center py-8 space-y-4">
+                          <div className="bg-rose-500/10 text-rose-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto">
+                            <HeartPulse size={36} />
+                          </div>
+                          <h3 className="text-2xl font-bold">Code Blue: סימולציית מיון ומחלקה</h3>
+                          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                            קבלת החלטות סיעודיות תחת לחץ זמן על בסיס חומר הלימוד של הפרק!
+                          </p>
+                          <button
+                            onClick={startCodeBlueGame}
+                            className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-lg shadow-rose-600/20 transition"
+                          >
+                            התחל תרחיש קליני 🚑
+                          </button>
+                        </div>
+                      ) : gameOver ? (
+                        <div className="text-center py-8 space-y-4">
+                          <h3 className="text-2xl font-bold">
+                            {patientStability > 0 ? 'המטופל יוצב בהצלחה במחלקה! 🎉' : 'המטופל פיתח הידרדרות קלינית ⚠️'}
+                          </h3>
+                          <p className="text-sm text-slate-400">רצף הצלחות: {streak} • יציבות סופית: {patientStability}%</p>
+                          <button
+                            onClick={startCodeBlueGame}
+                            className="px-6 py-3 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl transition"
+                          >
+                            שחק שוב
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-5">
+                          <div className="flex justify-between items-center bg-slate-100 dark:bg-slate-800 p-3.5 rounded-xl">
+                            <div className="flex items-center gap-2 font-bold text-rose-500">
+                              <Clock size={18} />
+                              <span>{timeLeft} שניות</span>
+                            </div>
+                            <div className="flex items-center gap-2 font-bold text-amber-500">
+                              <Flame size={18} />
+                              <span>רצף: {streak}</span>
+                            </div>
+                            <div className="text-xs font-bold">
+                              מדדים: <span className={patientStability > 50 ? 'text-emerald-500' : 'text-rose-500'}>{patientStability}%</span>
+                            </div>
+                          </div>
 
-                    <div
-                      onClick={() => setIsFlipped(!isFlipped)}
-                      className="min-h-[260px] rounded-2xl border-2 border-blue-500/30 bg-slate-50 dark:bg-slate-950 p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-500 transition select-none shadow-inner"
-                    >
-                      <span className="text-xs uppercase tracking-wider text-blue-500 font-bold mb-3">
-                        {isFlipped ? 'הסבר קליני מלא' : 'מושג / מונח סיעודי (לחץ להיפוך)'}
-                      </span>
-                      <p className="text-lg font-semibold leading-relaxed">
-                        {isFlipped ? studyContent.flashcards[cardIndex]?.back : studyContent.flashcards[cardIndex]?.front}
-                      </p>
-                    </div>
+                          <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 space-y-2">
+                            <span className="text-xs font-bold text-rose-500 uppercase">תרחיש קליני #{caseIndex + 1}</span>
+                            <p className="text-sm font-medium leading-relaxed">{studyContent.codeBlueCases[caseIndex].scenario}</p>
+                            <p className="text-sm font-bold pt-2">{studyContent.codeBlueCases[caseIndex].question}</p>
+                          </div>
 
-                    <div className="flex justify-between items-center gap-3">
-                      <button
-                        onClick={() => {
-                          setIsFlipped(false);
-                          setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
-                        }}
-                        className="flex-1 py-3 rounded-xl border border-amber-500/40 text-amber-500 font-semibold text-sm hover:bg-amber-500/10 transition"
-                      >
-                        צריך לחזור שוב
-                      </button>
-                      <button
-                        onClick={() => {
-                          const currentId = studyContent.flashcards[cardIndex]?.id;
-                          if (currentId && !knownCards.includes(currentId)) setKnownCards([...knownCards, currentId]);
-                          setIsFlipped(false);
-                          setCardIndex((prev) => (prev + 1) % studyContent.flashcards.length);
-                        }}
-                        className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm transition"
-                      >
-                        יודע היטב ✓
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'quiz' && (
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
-                    <div className="flex justify-between items-center">
-                      <h3 className="font-bold text-lg">בוחן אמריקאי מסכם (10 שאלות): {activeSession.topic}</h3>
-                      <button
-                        onClick={regenerateNewQuiz}
-                        disabled={isRegeneratingQuiz}
-                        className="text-xs px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-500 font-semibold hover:bg-blue-500/20 flex items-center gap-1 transition"
-                      >
-                        <RotateCcw size={14} className={isRegeneratingQuiz ? 'animate-spin' : ''} />
-                        צור 10 שאלות חדשות
-                      </button>
-                    </div>
-
-                    {studyContent.chapterQuiz.map((item, qIdx) => (
-                      <div key={qIdx} className="space-y-3 pb-5 border-b border-slate-200 dark:border-slate-800 last:border-0">
-                        <p className="font-semibold text-sm">{qIdx + 1}. {item.q}</p>
-                        <div className="space-y-1.5">
-                          {item.opts.map((opt, oIdx) => {
-                            const chosen = quizAnswers[qIdx] === oIdx;
-                            const isCorrect = item.ans === oIdx;
-                            let style = 'border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800';
-                            if (quizSubmitted) {
-                              if (isCorrect) style = 'bg-emerald-500/15 border-emerald-500 text-emerald-500 font-semibold';
-                              else if (chosen) style = 'bg-red-500/15 border-red-500 text-red-500';
-                            } else if (chosen) {
-                              style = 'border-blue-500 bg-blue-500/10 text-blue-500';
-                            }
-                            return (
+                          <div className="space-y-2">
+                            {studyContent.codeBlueCases[caseIndex].options.map((opt: string, idx: number) => (
                               <button
-                                key={oIdx}
-                                disabled={quizSubmitted}
-                                onClick={() => setQuizAnswers({ ...quizAnswers, [qIdx]: oIdx })}
-                                className={`w-full text-right p-3 rounded-xl border text-sm transition ${style}`}
+                                key={idx}
+                                onClick={() =>
+                                  handleGameAnswer(
+                                    idx,
+                                    studyContent.codeBlueCases[caseIndex].correct,
+                                    studyContent.codeBlueCases.length
+                                  )
+                                }
+                                className="w-full text-right p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-rose-500 hover:bg-rose-500/5 text-sm font-medium transition"
                               >
                                 {opt}
                               </button>
-                            );
-                          })}
-                        </div>
-
-                        {quizSubmitted && (
-                          <div className={`p-3.5 rounded-xl text-xs space-y-1 mt-2 ${
-                            quizAnswers[qIdx] === item.ans 
-                              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30' 
-                              : 'bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30'
-                          }`}>
-                            <p className="font-bold">
-                              {quizAnswers[qIdx] === item.ans ? '✓ תשובה נכונה!' : '✗ טעות בתשובה.'}
-                            </p>
-                            <p className="leading-relaxed"><strong className="font-semibold">הסבר קליני:</strong> {item.explanation}</p>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-
-                    {!quizSubmitted ? (
-                      <button
-                        onClick={() => setQuizSubmitted(true)}
-                        className="w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition shadow-lg shadow-blue-600/20"
-                      >
-                        הגש בוחן וקבל ניתוח שגיאות מלא (10 שאלות)
-                      </button>
-                    ) : (
-                      <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex justify-between items-center">
-                        <span className="font-bold text-blue-500">
-                          ציון: {studyContent.chapterQuiz.filter((q, i) => quizAnswers[i] === q.ans).length} מתוך {studyContent.chapterQuiz.length}
-                        </span>
-                        <button
-                          onClick={() => { setQuizAnswers({}); setQuizSubmitted(false); }}
-                          className="text-xs underline flex items-center gap-1 font-semibold"
-                        >
-                          <RotateCcw size={14} /> נסה שוב
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {activeTab === 'game' && (
-                  <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-rose-500/40 space-y-6 shadow-sm">
-                    {!gameStarted ? (
-                      <div className="text-center py-8 space-y-4">
-                        <div className="bg-rose-500/10 text-rose-500 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto">
-                          <HeartPulse size={36} />
-                        </div>
-                        <h3 className="text-2xl font-bold">Code Blue: סימולציית מיון ומחלקה</h3>
-                        <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-                          קבלת החלטות סיעודיות תחת לחץ זמן על בסיס חומר הלימוד של הפרק!
-                        </p>
-                        <button
-                          onClick={startCodeBlueGame}
-                          className="px-8 py-3.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl shadow-lg shadow-rose-600/20 transition"
-                        >
-                          התחל תרחיש קליני 🚑
-                        </button>
-                      </div>
-                    ) : gameOver ? (
-                      <div className="text-center py-8 space-y-4">
-                        <h3 className="text-2xl font-bold">
-                          {patientStability > 0 ? 'המטופל יוצב בהצלחה במחלקה! 🎉' : 'המטופל פיתח הידרדרות קלינית ⚠️'}
-                        </h3>
-                        <p className="text-sm text-slate-400">רצף הצלחות: {streak} • יציבות סופית: {patientStability}%</p>
-                        <button
-                          onClick={startCodeBlueGame}
-                          className="px-6 py-3 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-xl transition"
-                        >
-                          שחק שוב
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="space-y-5">
-                        <div className="flex justify-between items-center bg-slate-100 dark:bg-slate-800 p-3.5 rounded-xl">
-                          <div className="flex items-center gap-2 font-bold text-rose-500">
-                            <Clock size={18} />
-                            <span>{timeLeft} שניות</span>
-                          </div>
-                          <div className="flex items-center gap-2 font-bold text-amber-500">
-                            <Flame size={18} />
-                            <span>רצף: {streak}</span>
-                          </div>
-                          <div className="text-xs font-bold">
-                            מדדים: <span className={patientStability > 50 ? 'text-emerald-500' : 'text-rose-500'}>{patientStability}%</span>
+                            ))}
                           </div>
                         </div>
-
-                        <div className="p-4 rounded-xl bg-rose-500/5 border border-rose-500/20 space-y-2">
-                          <span className="text-xs font-bold text-rose-500 uppercase">תרחיש קליני #{caseIndex + 1}</span>
-                          <p className="text-sm font-medium leading-relaxed">{studyContent.codeBlueCases[caseIndex].scenario}</p>
-                          <p className="text-sm font-bold pt-2">{studyContent.codeBlueCases[caseIndex].question}</p>
-                        </div>
-
-                        <div className="space-y-2">
-                          {studyContent.codeBlueCases[caseIndex].options.map((opt, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => handleGameAnswer(idx, studyContent.codeBlueCases[caseIndex].correct, studyContent.codeBlueCases.length)}
-                              className="w-full text-right p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-rose-500 hover:bg-rose-500/5 text-sm font-medium transition"
-                            >
-                              {opt}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )
                 )}
               </div>
 
+              {/* צ'אט מדריך קליני */}
               <div className="lg:col-span-5">
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col h-[620px] sticky top-24 shadow-sm">
                   <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2.5">
@@ -1649,7 +2090,7 @@ export default function App() {
                     </div>
                     <div>
                       <h3 className="font-bold text-sm">מרצה קליני (AI Nursing Tutor)</h3>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">מבוסס על חומר הלימוד שלך</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">מבוסס על מלוא חומר הלימוד של הסשן</p>
                     </div>
                   </div>
 
@@ -1678,7 +2119,7 @@ export default function App() {
                       type="text"
                       value={chatInput}
                       onChange={(e) => setChatInput(e.target.value)}
-                      placeholder="שאל שאלה קלינית על החומר..."
+                      placeholder="בקש הבהרה קלינית או דוגמה נוספת..."
                       className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
                     />
                     <button
