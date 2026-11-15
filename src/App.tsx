@@ -4,7 +4,7 @@ import {
   FileText, CheckCircle2, Trash2, Sparkles, ArrowLeft,
   ArrowRight, Send, MessageSquare, HelpCircle, Download, AlertCircle,
   Layers, Award, Activity, RotateCcw, Flame, HeartPulse, Settings, Key, Loader2,
-  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck
+  Plus, FolderOpen, ArrowUp, ArrowDown, Brain, Check, Lock, FilePlus2, ShieldCheck, User
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
@@ -64,8 +64,32 @@ async function loadCoursesFromIDB(): Promise<any[]> {
 }
 
 // ==========================================
-// 2. ערבוב תשובות אמיתי בצד הלקוח (Fisher-Yates)
+// 2. פענוח JSON חסין שגיאות וערבוב תשובות
 // ==========================================
+function safeParseAIJson(rawText: string) {
+  let cleaned = rawText
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  const start = firstBrace === -1 ? firstBracket : firstBracket === -1 ? firstBrace : Math.min(firstBrace, firstBracket);
+  const lastBrace = cleaned.lastIndexOf('}');
+  const lastBracket = cleaned.lastIndexOf(']');
+  const end = Math.max(lastBrace, lastBracket);
+
+  if (start !== -1 && end !== -1 && end > start) {
+    cleaned = cleaned.slice(start, end + 1);
+  }
+
+  cleaned = cleaned
+    .replace(/,\s*([}\]])/g, '$1')
+    .replace(/[\u0000-\u0019]+/g, ' ');
+
+  return JSON.parse(cleaned);
+}
+
 function shuffleQuestionOptions<T extends { options?: string[]; opts?: string[]; correctIndex?: number; ans?: number; correct?: number }>(item: T): T {
   const listKey = item.options ? 'options' : 'opts';
   const indexKey = item.correctIndex !== undefined ? 'correctIndex' : item.ans !== undefined ? 'ans' : 'correct';
@@ -136,7 +160,6 @@ async function extractTextFromFile(file: File): Promise<string> {
   return '';
 }
 
-// חלוקה דטרמיניסטית רציפה ללא חפיפות וללא השמטת אף תו מהקבצים
 function splitFilesIntoDeterministicChunks(files: any[], targetSessionCount: number) {
   const annotatedBlocks: { fileName: string; text: string }[] = [];
 
@@ -202,7 +225,6 @@ function splitFilesIntoDeterministicChunks(files: any[], targetSessionCount: num
     });
   }
 
-  // השלמה במקרה של מעט מאוד פסקאות ביחס למספר הימים
   while (chunks.length < targetSessionCount) {
     const last = chunks[chunks.length - 1];
     chunks.push({
@@ -216,7 +238,6 @@ function splitFilesIntoDeterministicChunks(files: any[], targetSessionCount: num
   return chunks;
 }
 
-// חישוב פרמטרי הוראה לפי משך הסשן (30 / 45 / 60 / 90 דקות)
 function getDurationConfig(minutes: number) {
   if (minutes <= 30) {
     return {
@@ -255,9 +276,9 @@ function getDurationConfig(minutes: number) {
 }
 
 // ==========================================
-// 4. תקשורת AI מפוצלת, מהירה ותומכת Proxy
+// 4. תקשורת AI עם Retry אוטומטי והגנת JSON
 // ==========================================
-async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = true): Promise<string> {
+async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = true): Promise<any> {
   const useServerProxy = import.meta.env.VITE_USE_PROXY === 'true' && !apiKey;
 
   if (useServerProxy) {
@@ -268,7 +289,7 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = t
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'שגיאת שרת Proxy');
-    return data.text;
+    return isJson ? safeParseAIJson(data.text) : data.text;
   }
 
   let candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
@@ -298,47 +319,56 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = t
   let lastError: any = null;
 
   for (const modelName of candidateModels) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
 
-    try {
-      const generationConfig: any = {};
-      if (isJson) generationConfig.responseMimeType = 'application/json';
+      try {
+        const generationConfig: any = {
+          maxOutputTokens: 8192,
+          temperature: attempt === 1 ? 0.4 : 0.2,
+        };
+        if (isJson) generationConfig.responseMimeType = 'application/json';
 
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig,
-          }),
+        const safePrompt = isJson
+          ? `${prompt}\n\nחשוב מאוד: החזר JSON תקין בלבד. אל תשתמש במירכאות כפולות (") בתוך ערכי הטקסט עצמם (השתמש בגרש בודד ' במקום מירכאות כפולות בתוך משפטים).`
+          : prompt;
+
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: safePrompt }] }],
+              generationConfig,
+            }),
+          }
+        );
+
+        const data = await response.json();
+        if (data.error) throw new Error(data.error.message);
+
+        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (rawText) {
+          if (isJson) {
+            return safeParseAIJson(rawText);
+          }
+          return rawText;
         }
-      );
-
-      const data = await response.json();
-      if (data.error) throw new Error(data.error.message);
-
-      let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (rawText) {
-        if (isJson) {
-          rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-        }
-        return rawText;
+      } catch (err) {
+        lastError = err;
+        console.warn(`ניסיון ${attempt} במודל ${modelName} נכשל, מנסה שוב...`, err);
+      } finally {
+        clearTimeout(timeoutId);
       }
-    } catch (err) {
-      lastError = err;
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
-  throw new Error(`לא התקבלה תשובה מהמודל. שגיאה: ${lastError?.message || 'שגיאה לא ידועה'}`);
+  throw new Error(`לא התקבלה תשובה תקינה מהמודל. שגיאה: ${lastError?.message || 'שגיאה לא ידועה'}`);
 }
 
-// בניית שמות ורציונל על גבי מקטעים אמיתיים שכבר חולקו (ללא ניחושי אחוזים)
 async function enrichChunksWithAITitles(apiKey: string, chunks: any[], sessionDuration: number) {
   const previews = chunks.map((c, idx) => ({
     index: idx,
@@ -359,17 +389,14 @@ async function enrichChunksWithAITitles(apiKey: string, chunks: any[], sessionDu
 }
 יחידות: ${JSON.stringify(previews)}`;
 
-  const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
-  return JSON.parse(jsonText);
+  return await callGeminiWithFallback(apiKey, prompt, true);
 }
 
-// קריאה 1 (מהירה): יצירת שלבי הוראה אינטראקטיביים (Socratic Mastery Blocks)
 async function generateInteractiveLessonBlocks(apiKey: string, topic: string, rawTextChunk: string, duration: number) {
   const cfg = getDurationConfig(duration);
-  // שולחים עד 35,000 תווים ברצף מלא (ללא חיתוך שלישים שזורק חומר)
   const fullContext = rawTextChunk.slice(0, 35000);
 
-  const prompt = `אתה מרצה ומדריך קליני בסיעוד. בנה שיעור אינטראקטיבי בעברית לנושא "${topic}" עבור סשן של ${duration} דקות.
+  const prompt = `אתה מרצה ומדריך קליני בסיעוד. בנה שיעור אינטראקטיבי בעברית לנושא '${topic}' עבור סשן של ${duration} דקות.
 הנחיית תעדוף זמן: ${cfg.triageMode}
 
 חלק את השיעור ל-${cfg.blocksCount} שלבי לימוד עוקבים (blocks).
@@ -396,17 +423,15 @@ async function generateInteractiveLessonBlocks(apiKey: string, topic: string, ra
     }
   ],
   "comparisonTable": [
-    { "param": "פרמטר", "acute": "ממצא א׳", "chronic": "ממצא ב׳" }
+    { "param": "פרמטר", "acute": "ממצא א", "chronic": "ממצא ב" }
   ]
 }
 
 חומר הלימוד של הסשן:
 ${fullContext}`;
 
-  const jsonText = await callGeminiWithFallback(apiKey, prompt, true);
-  const parsed = JSON.parse(jsonText);
+  const parsed = await callGeminiWithFallback(apiKey, prompt, true);
 
-  // ערבוב התשובות והמשובים בצד הלקוח!
   if (Array.isArray(parsed.blocks)) {
     parsed.blocks = parsed.blocks.map((b: any) => {
       const zipped = (b.options || []).map((opt: string, idx: number) => ({
@@ -430,7 +455,6 @@ ${fullContext}`;
   return parsed;
 }
 
-// קריאה 2 (On-Demand): יצירת כרטיסיות בלבד
 async function generateFlashcardsOnly(apiKey: string, rawTextChunk: string, duration: number) {
   const cfg = getDurationConfig(duration);
   const prompt = `צור ${cfg.cardsCount} כרטיסיות שינון קליניות בעברית מתוך החומר הבא. התמקד במושגים החשובים ביותר למבחן.
@@ -440,11 +464,9 @@ async function generateFlashcardsOnly(apiKey: string, rawTextChunk: string, dura
 ]
 חומר: ${rawTextChunk.slice(0, 30000)}`;
 
-  const resText = await callGeminiWithFallback(apiKey, prompt, true);
-  return JSON.parse(resText);
+  return await callGeminiWithFallback(apiKey, prompt, true);
 }
 
-// קריאה 3 (On-Demand): יצירת בוחן אמריקאי + ערבוב תשובות בצד הלקוח
 async function generateQuizOnly(apiKey: string, rawTextChunk: string, duration: number) {
   const cfg = getDurationConfig(duration);
   const prompt = `צור בוחן של ${cfg.quizCount} שאלות קליניות רב-בררתיות (4 אפשרויות) בעברית מתוך החומר הבא, ברמת מבחן ממשלתי בסיעוד.
@@ -459,12 +481,10 @@ async function generateQuizOnly(apiKey: string, rawTextChunk: string, duration: 
 ]
 חומר: ${rawTextChunk.slice(0, 30000)}`;
 
-  const resText = await callGeminiWithFallback(apiKey, prompt, true);
-  const parsed = JSON.parse(resText);
+  const parsed = await callGeminiWithFallback(apiKey, prompt, true);
   return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
 }
 
-// קריאה 4 (On-Demand): יצירת סימולציית Code Blue + ערבוב תשובות בצד הלקוח
 async function generateCodeBlueOnly(apiKey: string, rawTextChunk: string) {
   const prompt = `צור 4 תרחישי חירום / התערבות סיעודית (Code Blue) בעברית מתוך החומר הבא.
 החזר מערך JSON תקין בלבד:
@@ -479,8 +499,7 @@ async function generateCodeBlueOnly(apiKey: string, rawTextChunk: string) {
 ]
 חומר: ${rawTextChunk.slice(0, 25000)}`;
 
-  const resText = await callGeminiWithFallback(apiKey, prompt, true);
-  const parsed = JSON.parse(resText);
+  const parsed = await callGeminiWithFallback(apiKey, prompt, true);
   return Array.isArray(parsed) ? parsed.map(shuffleQuestionOptions) : [];
 }
 
@@ -510,14 +529,14 @@ const getFallbackLesson = (topic: string, duration: number) => {
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('medstudy_api_key') || '');
-  const [showSettings, setShowSettings] = useState(false);
+  const [userName, setUserName] = useState(() => localStorage.getItem('medstudy_user_name') || '');
+  const [showSettings, setShowSettings] = useState(() => !localStorage.getItem('medstudy_api_key'));
 
   const [courses, setCourses] = useState<any[]>([]);
   const [isDBLoaded, setIsDBLoaded] = useState(false);
   const [activeCourseId, setActiveCourseId] = useState<string | null>(() => localStorage.getItem('medstudy_active_course') || null);
   const [step, setStep] = useState<number>(1);
 
-  // יצירת קורס חדש / הוספת חומר לקורס קיים
   const [isAddingMaterialMode, setIsAddingMaterialMode] = useState(false);
   const [courseName, setCourseName] = useState('');
   const [files, setFiles] = useState<any[]>([]);
@@ -529,35 +548,28 @@ export default function App() {
   const [isPlanningAI, setIsPlanningAI] = useState(false);
   const [draftPlan, setDraftPlan] = useState<any>(null);
 
-  // סשן פעיל ולולאת הוראה אינטראקטיבית
   const [activeSession, setActiveSession] = useState<any>(null);
   const [studyContent, setStudyContent] = useState<any>(null);
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [activeTab, setActiveTab] = useState<'learn' | 'flashcards' | 'quiz' | 'game'>('learn');
 
-  // מעקב שלבי הוראה (Mastery Loop)
   const [unlockedBlockIdx, setUnlockedBlockIdx] = useState<number>(0);
   const [blockAnswers, setBlockAnswers] = useState<Record<number, number>>({});
   const [isLessonMastered, setIsLessonMastered] = useState<boolean>(false);
 
-  // טעינה עצלה (On-Demand) לטאבים הנוספים
   const [isLoadingTabContent, setIsLoadingTabContent] = useState(false);
 
-  // צ'אט מדריך קליני
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
 
-  // כרטיסיות
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [knownCards, setKnownCards] = useState<number[]>([]);
 
-  // בוחן
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
 
-  // משחק Code Blue
   const [gameStarted, setGameStarted] = useState(false);
   const [timeLeft, setTimeLeft] = useState(60);
   const [caseIndex, setCaseIndex] = useState(0);
@@ -567,7 +579,6 @@ export default function App() {
 
   const activeCourse = courses.find((c) => c.id === activeCourseId) || null;
 
-  // טעינה ראשונית מ-IndexedDB (כולל מיגרציה אוטומטית מ-localStorage הישן)
   useEffect(() => {
     (async () => {
       try {
@@ -578,7 +589,7 @@ export default function App() {
             loaded = JSON.parse(legacyRaw);
             if (loaded.length > 0) {
               await saveCoursesToIDB(loaded);
-              localStorage.removeItem('medstudy_courses'); // פינוי מקום
+              localStorage.removeItem('medstudy_courses');
             }
           }
         }
@@ -596,7 +607,6 @@ export default function App() {
     })();
   }, []);
 
-  // שמירה אוטומטית ב-IndexedDB
   useEffect(() => {
     if (!isDBLoaded) return;
     saveCoursesToIDB(courses).catch((e) => console.error('שגיאת שמירה ב-IndexedDB:', e));
@@ -618,6 +628,11 @@ export default function App() {
     localStorage.setItem('medstudy_api_key', val);
   };
 
+  const saveUserName = (val: string) => {
+    setUserName(val);
+    localStorage.setItem('medstudy_user_name', val);
+  };
+
   const openNewCourseForm = () => {
     setIsAddingMaterialMode(false);
     setCourseName('');
@@ -629,7 +644,6 @@ export default function App() {
     setStep(1);
   };
 
-  // פתיחת מסך הוספת חומר ובניית לו"ז מחדש לקורס קיים
   const openAddMaterialToCourse = () => {
     if (!activeCourse) return;
     setIsAddingMaterialMode(true);
@@ -703,7 +717,6 @@ export default function App() {
       return;
     }
 
-    // במצב הוספת חומר לקורס קיים: שומרים את הסשנים שכבר הושלמו, ומאחדים את היתרה + החומר החדש
     const completedSessions = isAddingMaterialMode && activeCourse
       ? activeCourse.schedule.filter((s: any) => s.completed)
       : [];
@@ -719,8 +732,6 @@ export default function App() {
       : [];
 
     const allFilesToSchedule = [...uncompletedOldFiles, ...files];
-
-    // 1. חלוקה דטרמיניסטית רציפה של 100% מהטקסט ללא חפיפות וללא השמטות
     const deterministicChunks = splitFilesIntoDeterministicChunks(allFilesToSchedule, studyDates.length);
 
     if (apiKey.trim()) {
@@ -918,7 +929,6 @@ export default function App() {
     });
   };
 
-  // פתיחת סשן: טוען רק את שלבי ההוראה האינטראקטיביים (מהיר וממוקד)
   const startSession = async (session: any) => {
     setActiveSession(session);
     setActiveTab('learn');
@@ -933,10 +943,13 @@ export default function App() {
     setGameStarted(false);
     setStep(3);
 
+    const cleanName = userName.trim();
+    const greeting = cleanName ? `היי ${cleanName}!` : 'היי!';
+
     setChatMessages([
       {
         role: 'ai',
-        text: `היי מתן! התחלנו את "${session.topic}" (${session.duration} דקות). נלמד שלב אחרי שלב — ענה על שאלת הבדיקה בסוף כל הסבר כדי לפתוח את השלב הבא ולשחרר את התרגול.`,
+        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). נלמד שלב אחרי שלב — ענה על שאלת הבדיקה בסוף כל הסבר כדי לפתוח את השלב הבא ולשחרר את התרגול.`,
       },
     ]);
 
@@ -967,7 +980,6 @@ export default function App() {
     }
   };
 
-  // מענה על שאלת הבדיקה בכל בלוק הוראה (Socratic Mastery Loop)
   const handleBlockOptionSelect = (blockIdx: number, optIdx: number, correctIdx: number, totalBlocks: number) => {
     setBlockAnswers((prev) => ({ ...prev, [blockIdx]: optIdx }));
 
@@ -975,7 +987,6 @@ export default function App() {
       if (blockIdx + 1 < totalBlocks) {
         setUnlockedBlockIdx((prev) => Math.max(prev, blockIdx + 1));
       } else {
-        // כל שלבי ההוראה הושלמו בהצלחה!
         setIsLessonMastered(true);
         if (activeCourse && activeSession) {
           setCourses((prev) =>
@@ -995,10 +1006,9 @@ export default function App() {
     }
   };
 
-  // מעבר בין טאבים עם נעילה קשיחה + טעינה עצלה (On-Demand)
   const handleTabSwitch = async (targetTab: 'learn' | 'flashcards' | 'quiz' | 'game') => {
     if (targetTab !== 'learn' && !isLessonMastered) {
-      return; // שער נעול קשיח עד השלמת כל שלבי ההוראה
+      return;
     }
 
     setActiveTab(targetTab);
@@ -1106,9 +1116,10 @@ export default function App() {
 
     setIsChatLoading(true);
     try {
+      const studentContext = userName.trim() ? `שם הסטודנט/ית הוא ${userName.trim()}.` : '';
       const reply = await callGeminiWithFallback(
         apiKey.trim(),
-        `אתה מרצה ומדריך קליני בכיר בסיעוד. ענה בעברית מקצועית וממוקדת לשאלת הסטודנט על בסיס חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 30000)}\n\nשאלת הסטודנט: ${userMsg}`,
+        `אתה מרצה ומדריך קליני בכיר בסיעוד. ${studentContext} ענה בעברית מקצועית וממוקדת לשאלת הסטודנט על בסיס חומר הלימוד:\n\nחומר הלימוד:\n${activeSession.textChunk.slice(0, 30000)}\n\nשאלת הסטודנט: ${userMsg}`,
         false
       );
       setChatMessages((prev) => [...prev, { role: 'ai', text: reply || 'לא הצלחתי לנסח תשובה.' }]);
@@ -1157,7 +1168,9 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">MedStudy AI - Nursing</h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400">מערכת הוראה קלינית אינטראקטיבית</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {userName.trim() ? `סביבת הלמידה של ${userName.trim()}` : 'מערכת הוראה קלינית אינטראקטיבית'}
+            </p>
           </div>
         </div>
 
@@ -1187,7 +1200,7 @@ export default function App() {
             }`}
           >
             <Settings size={16} />
-            <span className="hidden sm:inline">{apiKey ? 'AI מחובר' : 'חבר מפתח AI'}</span>
+            <span className="hidden sm:inline">{apiKey ? 'הגדרות ו-AI' : 'חבר מפתח AI'}</span>
           </button>
           <button
             onClick={() => setDarkMode(!darkMode)}
@@ -1201,28 +1214,38 @@ export default function App() {
 
       {showSettings && (
         <div className="bg-slate-900 text-white border-b border-slate-800 px-6 py-4">
-          <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="max-w-5xl mx-auto flex flex-col lg:flex-row items-center justify-between gap-4">
             <div className="text-sm">
               <p className="font-bold flex items-center gap-1.5 text-blue-400">
-                <Key size={16} /> חיבור מנוע Google Gemini AI (נשמר ב-IndexedDB)
+                <Key size={16} /> הגדרות אישיות וחיבור מנוע Google Gemini AI
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                הדבק מפתח API לשימוש אישי, או הגדר <code className="text-blue-300">VITE_USE_PROXY=true</code> בשרת.
+                השם ומפתח ה-API נשמרים בדפדפן שלך בלבד. ניתן להנפיק מפתח חינמי ב-Google AI Studio.
               </p>
             </div>
-            <div className="flex w-full sm:w-auto gap-2">
+            <div className="flex flex-col sm:flex-row w-full lg:w-auto gap-2.5">
+              <div className="relative flex items-center">
+                <User size={15} className="text-slate-400 absolute right-3 pointer-events-none" />
+                <input
+                  type="text"
+                  value={userName}
+                  onChange={(e) => saveUserName(e.target.value)}
+                  placeholder="השם הפרטי שלך..."
+                  className="w-full sm:w-44 bg-slate-800 border border-slate-700 rounded-xl pr-9 pl-3 py-2 text-sm outline-none focus:border-blue-500 text-white"
+                />
+              </div>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => saveApiKey(e.target.value)}
-                placeholder="הדבק כאן מפתח AIza..."
-                className="flex-1 sm:w-72 bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm outline-none focus:border-blue-500 text-white"
+                placeholder="הדבק מפתח API (מתחיל ב-AIza...)"
+                className="flex-1 sm:w-64 bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm outline-none focus:border-blue-500 text-white"
               />
               <button
                 onClick={() => setShowSettings(false)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-sm font-semibold text-white"
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-xl text-sm font-semibold text-white shrink-0"
               >
-                שמור
+                שמור וסגור
               </button>
             </div>
           </div>
@@ -1230,12 +1253,13 @@ export default function App() {
       )}
 
       <main className="max-w-6xl mx-auto p-6">
-        {/* שלב 0: רשימת קורסים */}
         {step === 0 && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
               <div>
-                <h2 className="text-2xl font-bold">הקורסים שלי בסיעוד</h2>
+                <h2 className="text-2xl font-bold">
+                  {userName.trim() ? `הקורסים של ${userName.trim()}` : 'הקורסים שלי בסיעוד'}
+                </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
                   <ShieldCheck size={15} className="text-emerald-500" />
                   אחסון מורחב פעיל (IndexedDB) — 100% מחומרי הלימוד נשמרים ללא קיצוץ
@@ -1304,7 +1328,6 @@ export default function App() {
           </div>
         )}
 
-        {/* שלב 1: יצירת קורס חדש או הוספת חומר לקורס קיים */}
         {step === 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mt-4">
             <div className="lg:col-span-6 space-y-6">
@@ -1471,7 +1494,6 @@ export default function App() {
           </div>
         )}
 
-        {/* שלב 1.5: בקרת סילבוס */}
         {step === 1.5 && draftPlan && (
           <div className="space-y-6 mt-4 max-w-4xl mx-auto">
             <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border-2 border-blue-500/40 space-y-4 shadow-sm">
@@ -1566,7 +1588,6 @@ export default function App() {
           </div>
         )}
 
-        {/* שלב 2: לוח זמנים של קורס */}
         {step === 2 && activeCourse && (
           <div className="space-y-6 mt-4">
             <div className="flex flex-wrap justify-between items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -1641,7 +1662,6 @@ export default function App() {
           </div>
         )}
 
-        {/* שלב 3: סביבת למידה אינטראקטיבית עם שערים נעולים */}
         {step === 3 && activeSession && (
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
@@ -1652,7 +1672,6 @@ export default function App() {
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
               <div className="lg:col-span-7 space-y-5">
-                {/* סרגל ניווט עם נעילה קשיחה של טאבי התרגול עד סיום השיעור */}
                 <div className="grid grid-cols-4 gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
                   {[
                     { id: 'learn' as const, label: 'שיעור מודרך', icon: BookOpen, locked: false },
@@ -1692,7 +1711,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* טאב 1: לולאת הוראה אינטראקטיבית שלב-אחר-שלב */}
                 {activeTab === 'learn' && (
                   <div className="space-y-5">
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -1709,7 +1727,7 @@ export default function App() {
                     </div>
 
                     {studyContent.blocks?.map((block: any, bIdx: number) => {
-                      if (bIdx > unlockedBlockIdx) return null; // שלבים עתידיים מוסתרים עד מענה נכון!
+                      if (bIdx > unlockedBlockIdx) return null;
 
                       const chosenOpt = blockAnswers[bIdx];
                       const hasAnswered = chosenOpt !== undefined;
@@ -1742,7 +1760,6 @@ export default function App() {
                             {block.explanation}
                           </p>
 
-                          {/* שאלת בדיקה אינטראקטיבית בסוף כל בלוק */}
                           <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
                             <p className="text-sm font-bold flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
                               <HelpCircle size={16} className="text-blue-500 shrink-0" />
@@ -1774,7 +1791,6 @@ export default function App() {
                               })}
                             </div>
 
-                            {/* משוב הוראה מיידי מה-AI על הבחירה */}
                             {hasAnswered && (
                               <div
                                 className={`p-3.5 rounded-xl text-xs leading-relaxed ${
@@ -1794,7 +1810,6 @@ export default function App() {
                       );
                     })}
 
-                    {/* טבלת השוואה + הודעת סיום שיעור */}
                     {isLessonMastered && (
                       <div className="bg-emerald-500/10 border-2 border-emerald-500/40 p-6 rounded-2xl space-y-4">
                         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -1841,7 +1856,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* טאב 2: כרטיסיות (נטען On-Demand) */}
                 {activeTab === 'flashcards' && (
                   isLoadingTabContent || !studyContent.flashcards ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
@@ -1905,7 +1919,6 @@ export default function App() {
                   )
                 )}
 
-                {/* טאב 3: בוחן מסכם (נטען On-Demand + תשובות מעורבבות) */}
                 {activeTab === 'quiz' && (
                   isLoadingTabContent || !studyContent.chapterQuiz ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
@@ -1997,7 +2010,6 @@ export default function App() {
                   )
                 )}
 
-                {/* טאב 4: Code Blue (נטען On-Demand) */}
                 {activeTab === 'game' && (
                   isLoadingTabContent || !studyContent.codeBlueCases ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
@@ -2081,7 +2093,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* צ'אט מדריך קליני */}
               <div className="lg:col-span-5">
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col h-[620px] sticky top-24 shadow-sm">
                   <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2.5">
