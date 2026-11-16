@@ -350,7 +350,7 @@ function getDurationConfig(minutes: number) {
 }
 
 // ==========================================
-// 4. תקשורת AI, ביקורת מנכ"ל היברידית וסידור פדגוגי
+// 4. תקשורת AI מהירה, ביקורת מנכ"ל מובנית וסידור פדגוגי
 // ==========================================
 async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = true): Promise<any> {
   const useServerProxy = import.meta.env.VITE_USE_PROXY === 'true' && !apiKey;
@@ -402,6 +402,9 @@ async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = t
           maxOutputTokens: 8192,
           temperature: attempt === 1 ? 0.35 : 0.15,
         };
+        if (modelName.includes('2.5')) {
+          generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        }
         if (isJson) generationConfig.responseMimeType = 'application/json';
 
         const safePrompt = isJson
@@ -458,50 +461,23 @@ const TASK_LABELS: Record<ReviewTaskType, string> = {
   codeblue: 'סימולציית החירום Code Blue',
 };
 
-// ביקורת מנכ"ל היברידית: ביקורת עיוורת מלאה לתוכנית ולשיעור, וסטנדרט מנכ"ל מהיר לשאר הכלים
+// ביקורת מנכ"ל קלינית מובנית בקריאה אחת (מהירות מקסימלית ללא 3 סבבי רשת איטיים)
 async function executiveBlindReviewAndRefine(
   apiKey: string,
   initialPrompt: string,
-  sourceContext: string,
+  _sourceContext: string,
   taskType: ReviewTaskType
 ): Promise<any> {
-  // עבור כרטיסיות, בחנים וסימולציות: קריאה אחת חדה עם סטנדרט מנכ"ל מובנה (חוסך פי 3 זמן ומכסת בקשות)
-  if (taskType !== 'planning' && taskType !== 'lesson') {
-    const fastExecutivePrompt = `${initialPrompt}
+  const fastExecutivePrompt = `${initialPrompt}
 
-סטנדרט איכות מחייב (בקרת מנכ"ל קליני):
-- דיוק קליני מקסימלי ברמת מבחן רישוי ממשלתי בסיעוד (עדיפויות ABC, דגלים אדומים, תרופות וערכי נורמה).
-- מסיחים חכמים והגיוניים קלינית (ללא תשובות שקופות מדי) והסברים מלמדים וממוקדים.`;
-    return await callGeminiWithFallback(apiKey, fastExecutivePrompt, true);
-  }
+בקרת איכות מחייבת (${TASK_LABELS[taskType]} — סטנדרט מנכ"ל קליני):
+לפני החזרת הפלט הסופי, בצע בדיקה עצמית קפדנית והקפד על:
+1. דיוק קליני מוחלט ברמת מבחן רישוי ממשלתי בסיעוד (עדיפויות ABC, דגלים אדומים, מנגנוני פעולה, תרופות וערכי נורמה).
+2. סדר הוראה מדורג והגיוני, ניסוח חד וברור בעברית ללא מריחות.
+3. מסיחים חכמים והגיוניים קלינית (ללא תשובות שקופות מדי) והסברים מלמדים וממוקדים.
+החזר ישירות את התוצר הסופי והמשופר בפורמט JSON תקין בלבד.`;
 
-  // עבור תוכנית הלימודים והשיעור המודרך: ביקורת עיוורת מלאה ומהירה
-  const initialDraft = await callGeminiWithFallback(apiKey, initialPrompt, true);
-
-  try {
-    const ceoReviewPrompt = `אתה מנכ"ל קפדן של חברת EdTech רפואית. ספק חיצוני הגיש טיוטה עבור ${TASK_LABELS[taskType]}:
-${JSON.stringify(initialDraft)}
-
-חומר מקור (תקציר):
-${sourceContext.slice(0, 8000)}
-
-כתוב עד 3 הוראות תיקון קצרות וחדות בעברית (מקסימום 80 מילים סה"כ, טקסט רגיל) לשיפור הדיוק הקליני, סדר הלימוד או עומק ההסבר.`;
-
-    const ceoCritique = await callGeminiWithFallback(apiKey, ceoReviewPrompt, false);
-
-    const refinePrompt = `טיוטת JSON קיימת:
-${JSON.stringify(initialDraft)}
-
-הוראות המנכ"ל לשיפור:
-${ceoCritique}
-
-הטמע את התיקונים והחזר JSON תקין בלבד באותו מבנה בדיוק ללא טקסט מסביב.`;
-
-    return await callGeminiWithFallback(apiKey, refinePrompt, true);
-  } catch (err) {
-    console.warn(`ביקורת מנכ"ל (${taskType}) דולגה, מחזיר טיוטה ראשונית:`, err);
-    return initialDraft;
-  }
+  return await callGeminiWithFallback(apiKey, fastExecutivePrompt, true);
 }
 
 async function organizeUnitsPedagogicallyWithAI(
@@ -1442,7 +1418,7 @@ export default function App() {
   };
 
   // ==========================================
-  // טעינה מקדימה מדורגת ברקע (עם סטנדרט מנכ"ל מהיר)
+  // טעינה מקדימה מקבילית ברקע (Promise.all למהירות שיא)
   // ==========================================
   const prefetchSessionExtrasInBackground = async (session: any, currentContent: any) => {
     const runId = ++bgPrefetchRunIdRef.current;
@@ -1497,70 +1473,73 @@ export default function App() {
       return;
     }
 
-    if (needCards && bgPrefetchRunIdRef.current === runId) {
-      try {
-        const cards = await generateFlashcardsOnly(key, session.textChunk, session.duration);
-        if (bgPrefetchRunIdRef.current === runId) {
-          updateSessionSavedContent(session.id, { flashcards: cards });
-          setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'ready' }));
+    await Promise.all([
+      (async () => {
+        if (!needCards || bgPrefetchRunIdRef.current !== runId) return;
+        try {
+          const cards = await generateFlashcardsOnly(key, session.textChunk, session.duration);
+          if (bgPrefetchRunIdRef.current === runId) {
+            updateSessionSavedContent(session.id, { flashcards: cards });
+            setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'ready' }));
+          }
+        } catch (e) {
+          console.warn('שגיאת טעינה מקדימה של כרטיסיות:', e);
+          if (bgPrefetchRunIdRef.current === runId) setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'idle' }));
         }
-      } catch (e) {
-        console.warn('שגיאת טעינה מקדימה של כרטיסיות:', e);
-        if (bgPrefetchRunIdRef.current === runId) setBgPrefetchStatus((prev) => ({ ...prev, flashcards: 'idle' }));
-      }
-    }
-
-    if (needQuiz && bgPrefetchRunIdRef.current === runId) {
-      try {
-        const quiz = await generateQuizOnly(key, session.textChunk, session.duration);
-        if (bgPrefetchRunIdRef.current === runId) {
-          const newAttempt = {
-            id: 'quiz-' + Date.now(),
-            createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
-            questions: quiz,
-            answers: {},
-            submitted: false,
-            score: null,
-            weaknessFeedback: '',
-          };
-          updateSessionSavedContent(session.id, { quizAttempts: [newAttempt] });
-          setActiveQuizAttemptIdx(0);
-          setQuizAnswers({});
-          setQuizSubmitted(false);
-          setQuizWeaknessFeedback('');
-          setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'ready' }));
+      })(),
+      (async () => {
+        if (!needQuiz || bgPrefetchRunIdRef.current !== runId) return;
+        try {
+          const quiz = await generateQuizOnly(key, session.textChunk, session.duration);
+          if (bgPrefetchRunIdRef.current === runId) {
+            const newAttempt = {
+              id: 'quiz-' + Date.now(),
+              createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+              questions: quiz,
+              answers: {},
+              submitted: false,
+              score: null,
+              weaknessFeedback: '',
+            };
+            updateSessionSavedContent(session.id, { quizAttempts: [newAttempt] });
+            setActiveQuizAttemptIdx(0);
+            setQuizAnswers({});
+            setQuizSubmitted(false);
+            setQuizWeaknessFeedback('');
+            setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'ready' }));
+          }
+        } catch (e) {
+          console.warn('שגיאת טעינה מקדימה של בוחן:', e);
+          if (bgPrefetchRunIdRef.current === runId) setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'idle' }));
         }
-      } catch (e) {
-        console.warn('שגיאת טעינה מקדימה של בוחן:', e);
-        if (bgPrefetchRunIdRef.current === runId) setBgPrefetchStatus((prev) => ({ ...prev, quiz: 'idle' }));
-      }
-    }
-
-    if (needGame && bgPrefetchRunIdRef.current === runId) {
-      try {
-        const cases = await generateCodeBlueOnly(key, session.textChunk);
-        if (bgPrefetchRunIdRef.current === runId) {
-          const newAttempt = {
-            id: 'cb-' + Date.now(),
-            createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
-            cases,
-            answers: {},
-            completed: false,
-            finalStability: 100,
-            finalStreak: 0,
-            weaknessFeedback: '',
-          };
-          updateSessionSavedContent(session.id, { codeBlueAttempts: [newAttempt] });
-          setActiveCodeBlueAttemptIdx(0);
-          setCodeBlueAnswers({});
-          setCodeBlueWeaknessFeedback('');
-          setBgPrefetchStatus((prev) => ({ ...prev, game: 'ready' }));
+      })(),
+      (async () => {
+        if (!needGame || bgPrefetchRunIdRef.current !== runId) return;
+        try {
+          const cases = await generateCodeBlueOnly(key, session.textChunk);
+          if (bgPrefetchRunIdRef.current === runId) {
+            const newAttempt = {
+              id: 'cb-' + Date.now(),
+              createdAt: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' }),
+              cases,
+              answers: {},
+              completed: false,
+              finalStability: 100,
+              finalStreak: 0,
+              weaknessFeedback: '',
+            };
+            updateSessionSavedContent(session.id, { codeBlueAttempts: [newAttempt] });
+            setActiveCodeBlueAttemptIdx(0);
+            setCodeBlueAnswers({});
+            setCodeBlueWeaknessFeedback('');
+            setBgPrefetchStatus((prev) => ({ ...prev, game: 'ready' }));
+          }
+        } catch (e) {
+          console.warn('שגיאת טעינה מקדימה של Code Blue:', e);
+          if (bgPrefetchRunIdRef.current === runId) setBgPrefetchStatus((prev) => ({ ...prev, game: 'idle' }));
         }
-      } catch (e) {
-        console.warn('שגיאת טעינה מקדימה של Code Blue:', e);
-        if (bgPrefetchRunIdRef.current === runId) setBgPrefetchStatus((prev) => ({ ...prev, game: 'idle' }));
-      }
-    }
+      })(),
+    ]);
   };
 
   const startSession = async (session: any) => {
@@ -1590,7 +1569,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). השיעור עבר בקרת איכות קלינית קפדנית, ובזמן הלמידה אני מכין ברקע גם את הכרטיסיות, הבוחן ו-Code Blue!`,
+        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). בזמן הלמידה אני מכין ברקע במקביל גם את הכרטיסיות, הבוחן ו-Code Blue!`,
       },
     ]);
 
@@ -2447,7 +2426,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                 <Key size={16} /> הגדרות אישיות וחיבור מנוע Google Gemini AI
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                השם ומפתח ה-API נשמרים בדפדפן שלך בלבד. תוכניות הלימוד והשיעורים עוברים ביקורת איכות קפדנית אוטומטית.
+                השם ומפתח ה-API נשמרים בדפדפן שלך בלבד. כל תוכן במערכת מיוצר בסטנדרט קליני מואץ.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row w-full lg:w-auto gap-2.5">
@@ -2875,7 +2854,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   {isPlanningAI ? (
                     <>
                       <Loader2 size={20} className="animate-spin" />
-                      <span>מסדר ומשייף את תוכנית הלימודים...</span>
+                      <span>מסדר את תוכנית הלימודים...</span>
                     </>
                   ) : (
                     <>
@@ -3188,8 +3167,8 @@ ${activeSession.textChunk.slice(0, 18000)}
           isLoadingAI ? (
             <div className="flex flex-col items-center justify-center py-24 space-y-4">
               <Loader2 size={44} className="text-blue-500 animate-spin" />
-              <h3 className="text-lg font-bold">המרצה הקליני בונה ומשייף שיעור אינטראקטיבי...</h3>
-              <p className="text-sm text-slate-400">השיעור עובר ביקורת איכות קפדנית ל-{activeSession.duration} דקות עם שאלות בדיקה לכל שלב</p>
+              <h3 className="text-lg font-bold">המרצה הקליני בונה שיעור אינטראקטיבי...</h3>
+              <p className="text-sm text-slate-400">מייצר תוכן מותאם ל-{activeSession.duration} דקות עם שאלות בדיקה לכל שלב</p>
             </div>
           ) : studyContent && (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
