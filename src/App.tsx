@@ -350,7 +350,7 @@ function getDurationConfig(minutes: number) {
 }
 
 // ==========================================
-// 4. תקשורת AI, ביקורת מנכ"ל עיוורת וסידור פדגוגי
+// 4. תקשורת AI, ביקורת מנכ"ל היברידית וסידור פדגוגי
 // ==========================================
 async function callGeminiWithFallback(apiKey: string, prompt: string, isJson = true): Promise<any> {
   const useServerProxy = import.meta.env.VITE_USE_PROXY === 'true' && !apiKey;
@@ -458,8 +458,6 @@ const TASK_LABELS: Record<ReviewTaskType, string> = {
   codeblue: 'סימולציית החירום Code Blue',
 };
 
-// ביקורת עיוורת מנקודת מבט של מנכ"ל קפדן עבור כל חלקי המערכת
-async function executiveBlindReviewAndRefine(
 // ביקורת מנכ"ל היברידית: ביקורת עיוורת מלאה לתוכנית ולשיעור, וסטנדרט מנכ"ל מהיר לשאר הכלים
 async function executiveBlindReviewAndRefine(
   apiKey: string,
@@ -1444,7 +1442,7 @@ export default function App() {
   };
 
   // ==========================================
-  // טעינה מקדימה מדורגת ברקע (עם ביקורת מנכ"ל)
+  // טעינה מקדימה מדורגת ברקע (עם סטנדרט מנכ"ל מהיר)
   // ==========================================
   const prefetchSessionExtrasInBackground = async (session: any, currentContent: any) => {
     const runId = ++bgPrefetchRunIdRef.current;
@@ -1499,7 +1497,6 @@ export default function App() {
       return;
     }
 
-    // הרצה מדורגת ברקע כדי לשמור על יציבות מול מגבלת הקצב בזמן ביקורת המנכ"ל
     if (needCards && bgPrefetchRunIdRef.current === runId) {
       try {
         const cards = await generateFlashcardsOnly(key, session.textChunk, session.duration);
@@ -1593,7 +1590,7 @@ export default function App() {
     setChatMessages([
       {
         role: 'ai',
-        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). השיעור עבר בקרת איכות קלינית קפדנית, ובזמן הלמידה אני מכין ומשייף ברקע גם את הכרטיסיות, הבוחן ו-Code Blue!`,
+        text: `${greeting} התחלנו את "${session.topic}" (${session.duration} דקות). השיעור עבר בקרת איכות קלינית קפדנית, ובזמן הלמידה אני מכין ברקע גם את הכרטיסיות, הבוחן ו-Code Blue!`,
       },
     ]);
 
@@ -2450,7 +2447,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                 <Key size={16} /> הגדרות אישיות וחיבור מנוע Google Gemini AI
               </p>
               <p className="text-xs text-slate-400 mt-0.5">
-                השם ומפתח ה-API נשמרים בדפדפן שלך בלבד. כל תוכן במערכת עובר ביקורת איכות כפולה אוטומטית.
+                השם ומפתח ה-API נשמרים בדפדפן שלך בלבד. תוכניות הלימוד והשיעורים עוברים ביקורת איכות קפדנית אוטומטית.
               </p>
             </div>
             <div className="flex flex-col sm:flex-row w-full lg:w-auto gap-2.5">
@@ -2522,7 +2519,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                       className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm"
                     >
                       {isGeneratingMarathon ? <Loader2 size={15} className="animate-spin" /> : <Target size={15} />}
-                      <span>{isGeneratingMarathon ? 'בונה ומשייף מרתון...' : 'בנה מרתון תיקון טעויות'}</span>
+                      <span>{isGeneratingMarathon ? 'בונה מרתון...' : 'בנה מרתון תיקון טעויות'}</span>
                     </button>
                   </div>
 
@@ -2878,7 +2875,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   {isPlanningAI ? (
                     <>
                       <Loader2 size={20} className="animate-spin" />
-                      <span>מסדר ומשייף את תוכנית הלימודים (בקרת איכות כפולה)...</span>
+                      <span>מסדר ומשייף את תוכנית הלימודים...</span>
                     </>
                   ) : (
                     <>
@@ -3502,7 +3499,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   isLoadingTabContent || !studyContent.flashcards ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-blue-500 animate-spin" />
-                      <p className="text-sm font-semibold">מסיים להכין ולשייף כרטיסיות שינון...</p>
+                      <p className="text-sm font-semibold">מכין כרטיסיות שינון...</p>
                     </div>
                   ) : (
                     <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-6 shadow-sm">
@@ -3573,7 +3570,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   isLoadingTabContent || !currentQuizAttempt ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-blue-500 animate-spin" />
-                      <p className="text-sm font-semibold">מסיים לבנות ולשייף שאלות בחינה קליניות...</p>
+                      <p className="text-sm font-semibold">בונה שאלות בחינה קליניות...</p>
                     </div>
                   ) : (
                     <div className="space-y-5">
@@ -3730,7 +3727,7 @@ ${activeSession.textChunk.slice(0, 18000)}
                   isLoadingTabContent || !currentCodeBlueAttempt ? (
                     <div className="bg-white dark:bg-slate-900 p-12 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center space-y-3">
                       <Loader2 size={32} className="text-rose-500 animate-spin" />
-                      <p className="text-sm font-semibold">מסיים להכין ולשייף תרחישי חירום קליניים...</p>
+                      <p className="text-sm font-semibold">מכין תרחישי חירום קליניים...</p>
                     </div>
                   ) : (
                     <div className="space-y-5">
